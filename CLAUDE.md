@@ -1,0 +1,83 @@
+# CLAUDE.md
+
+이 파일은 Claude Code가 이 저장소에서 작업할 때 참고하는 가이드입니다.
+
+## 프로젝트 개요
+
+**auto-dub** — 오디오/비디오 파일을 업로드하면 지정한 타겟 언어로 자동 더빙된 결과물을 제공하는 음성 더빙 서비스.
+
+- **입력**: 오디오/비디오 파일 + 타겟 언어 선택
+- **출력**: 타겟 언어로 더빙된 오디오/비디오 파일 (재생 및 다운로드)
+
+## 명령어
+
+```bash
+npm run dev           # 개발 서버 실행 (http://localhost:3000)
+npm run build         # 프로덕션 빌드
+npm run start         # 프로덕션 서버 실행
+npm run lint          # ESLint 실행
+npm run test          # 테스트 실행
+npm run test:watch    # TDD watch 모드
+npm run test:coverage # 커버리지 리포트
+```
+
+## 기술 스택
+
+- **Next.js 16** (App Router)
+- **React 19**
+- **TypeScript** (strict 모드, 경로 별칭 `@/*`는 저장소 루트에 매핑)
+- **Tailwind CSS v4** (`@tailwindcss/postcss`로 설정, CSS에서 `@import "tailwindcss"`로 임포트)
+- **ElevenLabs API** — 음성 전사(STT) 및 음성 합성(TTS)
+- **onnx-community/whisper-small** — 전사 텍스트 번역 (로컬 ONNX 모델)
+- **NextAuth.js v5 (beta)** — Google OAuth 인증
+- **Vitest + Testing Library** — 단위/컴포넌트 테스트
+- **Turso (libSQL)** — 데이터베이스 (회원 화이트리스트 관리)
+- **Vercel** — 배포
+
+## 더빙 파이프라인
+
+1. **전사** — 업로드된 파일에서 음성 추출 → ElevenLabs STT API로 텍스트 전사
+2. **번역** — 전사 텍스트를 `onnx-community/whisper-small` 모델로 타겟 언어 번역
+3. **합성** — 번역 텍스트를 ElevenLabs TTS API로 타겟 언어 음성 생성
+4. **결과 제공** — 더빙된 오디오/비디오 재생 및 다운로드
+
+## 인증 및 접근 제어
+
+- **Google OAuth** (NextAuth.js) 로그인 전용
+- **화이트리스트 기반 접근 제어** — Turso DB에 등록된 이메일만 서비스 이용 가능
+- 미승인 사용자는 로그인 후 접근 거부 처리
+
+## 아키텍처
+
+애플리케이션 코드는 `app/`에 위치합니다:
+
+- `app/layout.tsx` — 루트 레이아웃; Geist Sans + Geist Mono 폰트 및 전역 CSS 설정
+- `app/page.tsx` — 홈 페이지
+- `app/globals.css` — 전역 스타일; CSS 커스텀 속성 및 Tailwind 테마 토큰
+- `app/api/` — API 라우트 (더빙 처리, 인증 등)
+
+주요 예정 디렉토리:
+- `app/api/dub/` — 더빙 파이프라인 API 라우트
+- `app/api/auth/` — NextAuth.js 핸들러
+- `lib/` — ElevenLabs 클라이언트, Turso DB 클라이언트, 번역 모델 유틸리티
+
+
+## 개발 규칙
+
+### 코드 작성 규칙
+- **절대 모킹하지 않기**: 실제 동작하는 코드만 작성
+- **타입 안정성**: TypeScript strict 모드 준수
+- **테스트 우선**: 테스트 커버리지 100% 목표    
+
+## 개발 워크플로우 (증강 코딩 + TDD)
+
+### 켄트 벡의 증강 코딩
+- **증강 코딩 vs 바이브 코딩**: 코드 품질, 테스트, 단순성을 중시하되 AI와 협업
+- **중간 결과 관찰**: AI가 반복 동작, 요청하지 않은 기능 구현, 테스트 삭제 등의 신호를 보이면 즉시 개입
+- **설계 주도권 유지**: AI가 너무 앞서가지 않도록 개발자가 설계 방향 제시
+
+### TDD 워크플로우
+1. 실패하는 테스트 먼저 작성
+2. 테스트를 통과하는 최소 코드 작성
+3. 코드 품질 개선
+
