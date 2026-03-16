@@ -27,8 +27,7 @@ npm run test:coverage # 커버리지 리포트
 - **React 19**
 - **TypeScript** (strict 모드, 경로 별칭 `@/*`는 저장소 루트에 매핑)
 - **Tailwind CSS v4** (`@tailwindcss/postcss`로 설정, CSS에서 `@import "tailwindcss"`로 임포트)
-- **ElevenLabs API** — 음성 전사(STT) 및 음성 합성(TTS)
-- **onnx-community/whisper-small** — 전사 텍스트 번역 (로컬 ONNX 모델)
+- **ElevenLabs API** — 음성 전사(STT), 번역, 음성 합성(TTS)
 - **NextAuth.js v5 (beta)** — Google OAuth 인증
 - **Vitest + Testing Library** — 단위/컴포넌트 테스트
 - **Turso (libSQL)** — 데이터베이스 (회원 화이트리스트 관리)
@@ -37,7 +36,7 @@ npm run test:coverage # 커버리지 리포트
 ## 더빙 파이프라인
 
 1. **전사** — 업로드된 파일에서 음성 추출 → ElevenLabs STT API로 텍스트 전사
-2. **번역** — 전사 텍스트를 `onnx-community/whisper-small` 모델로 타겟 언어 번역
+2. **번역** — 전사 텍스트를 ElevenLabs API로 타겟 언어 번역
 3. **합성** — 번역 텍스트를 ElevenLabs TTS API로 타겟 언어 음성 생성
 4. **결과 제공** — 더빙된 오디오/비디오 재생 및 다운로드
 
