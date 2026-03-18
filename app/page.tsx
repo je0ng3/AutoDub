@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { signOut } from "next-auth/react";
 
 const LANGUAGES = [
   { code: "ko", label: "한국어" },
@@ -134,6 +135,12 @@ export default function Home() {
           <span className="text-sm font-semibold tracking-tight text-zinc-900">
             AOTO DUB
           </span>
+          <button
+            onClick={() => signOut({ callbackUrl: "/login" })}
+            className="text-xs text-zinc-400 hover:text-zinc-600 transition-colors cursor-pointer"
+          >
+            로그아웃
+          </button>
         </div>
       </header>
 
