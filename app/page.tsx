@@ -21,7 +21,93 @@ const PIPELINE_STEPS = [
 ] as const;
 
 type PipelineKey = (typeof PIPELINE_STEPS)[number]["key"];
-type PageStep = "idle" | "ready" | "processing" | "done" | "error";
+type PageStep = "idle" | "ready" | "cropping" | "processing" | "done" | "error";
+
+// FFmpeg WASM 싱글턴 
+let ffmpegInstance: import("@ffmpeg/ffmpeg").FFmpeg | null = null;
+let ffmpegLoadPromise: Promise<import("@ffmpeg/ffmpeg").FFmpeg> | null = null;
+
+async function loadFFmpeg() {
+  if (ffmpegInstance) return ffmpegInstance;
+  if (ffmpegLoadPromise) return ffmpegLoadPromise;
+
+  ffmpegLoadPromise = (async () => {
+    const { FFmpeg } = await import("@ffmpeg/ffmpeg");
+    const { toBlobURL } = await import("@ffmpeg/util");
+    const ff = new FFmpeg();
+    const base = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd";
+    await ff.load({
+      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, "text/javascript"),
+      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
+    });
+    ffmpegInstance = ff;
+    return ff;
+  })();
+
+  return ffmpegLoadPromise;
+}
+
+async function cropFileOnClient(
+  file: File,
+  startSec: number,
+  endSec: number
+): Promise<File> {
+  const durationSec = endSec - startSec;
+  const { fetchFile } = await import("@ffmpeg/util");
+  const ff = await loadFFmpeg();
+  const MIME_EXT: Record<string, string> = {
+    "audio/mpeg": "mp3",
+    "audio/mp4": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/x-wav": "wav",
+    "audio/x-flac": "flac",
+    "video/quicktime": "mov",
+    "video/x-msvideo": "avi",
+    "video/x-matroska": "mkv",
+  };
+  const sub = file.type.split("/")[1] ?? "";
+  const ext = MIME_EXT[file.type] ?? (sub.startsWith("x-") ? sub.slice(2) : sub);
+  const input = `input.${ext}`;
+  const output = `output.${ext}`;
+
+  await ff.writeFile(input, await fetchFile(file));
+
+  const isVideo = file.type.startsWith("video/");
+  const args = isVideo
+    ? [
+        "-ss", String(startSec),
+        "-i", input,
+        "-t", String(durationSec),
+        "-c", "copy",
+        "-y", output,
+      ]
+    : [
+        "-ss", String(startSec),
+        "-i", input,
+        "-t", String(durationSec),
+        "-c", "copy",
+        "-y", output,
+      ];
+
+  const exitCode = await ff.exec(args);
+  if (exitCode !== 0) throw new Error(`FFmpeg 종료 코드: ${exitCode} (파일 형식: ${file.type})`);
+  const data = await ff.readFile(output) as Uint8Array;
+  // deleteFile 전에 복사 — readFile은 WASM FS 메모리의 view를 반환하므로
+  // deleteFile 이후 참조하면 해제된 메모리를 읽게 된다
+  const copy = data.slice();
+  await ff.deleteFile(input);
+  await ff.deleteFile(output);
+
+  return new File([copy.buffer], file.name, { type: file.type });
+}
+
+const MAX_CROP_DURATION = 60;
+
+function formatTime(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
 export default function Home() {
   const [pageStep, setPageStep] = useState<PageStep>("idle");
@@ -32,10 +118,28 @@ export default function Home() {
   const [doneSteps, setDoneSteps] = useState<Set<PipelineKey>>(new Set());
   const [resultId, setResultId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [fileDuration, setFileDuration] = useState<number | null>(null);
+  const [cropStart, setCropStart] = useState(0);
+  const [cropEnd, setCropEnd] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function handleFile(f: File) {
     setFile(f);
+    setCropStart(0);
+    setCropEnd(null);
+    setFileDuration(null);
+
+    const url = URL.createObjectURL(f);
+    const media = f.type.startsWith("video/")
+      ? document.createElement("video")
+      : document.createElement("audio");
+    media.src = url;
+    media.onloadedmetadata = () => {
+      setFileDuration(media.duration);
+      setCropEnd(Math.min(media.duration, MAX_CROP_DURATION));
+      URL.revokeObjectURL(url);
+    };
+
     setPageStep("ready");
   }
 
@@ -54,17 +158,49 @@ export default function Home() {
   async function handleStart() {
     if (!file) return;
 
-    setPageStep("processing");
-    setActiveStep("transcribing");
     setDoneSteps(new Set());
     setResultId(null);
     setErrorMessage(null);
 
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("targetLang", targetLang);
+    const isVideo = file.type.startsWith("video/");
+    const effectiveEnd = cropEnd ?? fileDuration ?? 0;
+    const needsCrop = fileDuration !== null && (cropStart > 0 || effectiveEnd < fileDuration);
 
-    const res = await fetch("/api/dub", { method: "POST", body: formData });
+    // 오디오 파일만 클라이언트에서 크롭 (비디오는 WASM 스트림 복사가 컨테이너를 깨뜨림)
+    let fileToSend = file;
+    if (!isVideo && needsCrop) {
+      setPageStep("cropping");
+      try {
+        fileToSend = await cropFileOnClient(file, cropStart, effectiveEnd);
+      } catch (err) {
+        console.error("[crop]", err);
+        setErrorMessage(err instanceof Error ? err.message : "파일 크롭 중 오류가 발생했습니다.");
+        setPageStep("error");
+        return;
+      }
+    }
+
+    setPageStep("processing");
+    setActiveStep("transcribing");
+
+    // 비디오 파일의 크롭 파라미터는 헤더로 서버에 전달
+    const extraHeaders: Record<string, string> = {};
+    if (isVideo && fileDuration !== null) {
+      extraHeaders["x-crop-start"] = String(cropStart);
+      extraHeaders["x-crop-end"] = String(effectiveEnd);
+    }
+
+    const res = await fetch("/api/dub", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "x-target-lang": targetLang,
+        "x-file-type": fileToSend.type,
+        "x-file-name": encodeURIComponent(fileToSend.name),
+        ...extraHeaders,
+      },
+      body: fileToSend,
+    });
     if (!res.ok || !res.body) {
       setErrorMessage("서버 오류가 발생했습니다.");
       setPageStep("error");
@@ -122,6 +258,9 @@ export default function Home() {
     setDoneSteps(new Set());
     setResultId(null);
     setErrorMessage(null);
+    setFileDuration(null);
+    setCropStart(0);
+    setCropEnd(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -155,6 +294,8 @@ export default function Home() {
           </h1>
           <p className="text-zinc-500 text-base leading-relaxed">
             더빙을 원하는 오디오 또는 비디오 파일을 업로드하세요.
+            <br />
+            무료버전인 만큼 최대 길이는 1분으로 부탁드려요 (⁎⁍̴̛ ₃ ⁍̴̛⁎)!!
           </p>
         </div>
 
@@ -257,8 +398,72 @@ export default function Home() {
           </div>
         )}
 
+        {/* Crop Selector */}
+        {pageStep === "ready" && fileDuration !== null && cropEnd !== null && (
+          <div className="mb-6 rounded-2xl border border-zinc-200 p-5">
+            <div className="flex items-center justify-between mb-4">
+              <label className="text-xs font-medium text-zinc-500 uppercase tracking-widest">
+                구간 선택
+              </label>
+              <span className="text-xs font-mono text-zinc-700">
+                {formatTime(cropStart)} – {formatTime(cropEnd)}
+                <span className="text-zinc-400 ml-1">({formatTime(cropEnd - cropStart)})</span>
+              </span>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <div className="flex justify-between text-xs text-zinc-400 mb-1.5">
+                  <span>시작</span>
+                  <span className="font-mono text-zinc-600">{formatTime(cropStart)}</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.floor(fileDuration)}
+                  step={1}
+                  value={cropStart}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    setCropStart(val);
+                    if (val >= cropEnd) setCropEnd(Math.min(val + 1, Math.floor(fileDuration)));
+                    else if (cropEnd - val > MAX_CROP_DURATION) setCropEnd(val + MAX_CROP_DURATION);
+                  }}
+                  className="w-full accent-zinc-900"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between text-xs text-zinc-400 mb-1.5">
+                  <span>끝</span>
+                  <span className="font-mono text-zinc-600">{formatTime(cropEnd)}</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.floor(fileDuration)}
+                  step={1}
+                  value={cropEnd}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    setCropEnd(val);
+                    if (val <= cropStart) setCropStart(Math.max(val - 1, 0));
+                    else if (val - cropStart > MAX_CROP_DURATION) setCropStart(val - MAX_CROP_DURATION);
+                  }}
+                  className="w-full accent-zinc-900"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-between mt-3 text-xs text-zinc-400">
+              <span>0:00</span>
+              <span>{formatTime(Math.floor(fileDuration))}</span>
+            </div>
+          </div>
+        )}
+
         {/* Language Selector + CTA */}
-        {(pageStep === "ready" || pageStep === "processing") && (
+        {(pageStep === "ready" || pageStep === "cropping" || pageStep === "processing") && (
           <div className="space-y-4 mb-8">
             <div>
               <label className="block text-xs font-medium text-zinc-500 mb-2 uppercase tracking-widest">
@@ -269,13 +474,13 @@ export default function Home() {
                   <button
                     key={lang.code}
                     onClick={() => setTargetLang(lang.code)}
-                    disabled={pageStep === "processing"}
+                    disabled={pageStep !== "ready"}
                     className={[
                       "py-2.5 rounded-xl text-sm font-medium transition-all duration-100 border",
                       targetLang === lang.code
                         ? "bg-zinc-900 text-white border-zinc-900"
                         : "bg-white text-zinc-600 border-zinc-200 hover:border-zinc-400 hover:text-zinc-900",
-                      pageStep === "processing"
+                      pageStep !== "ready"
                         ? "opacity-50 cursor-not-allowed"
                         : "",
                     ].join(" ")}
@@ -288,25 +493,24 @@ export default function Home() {
 
             <button
               onClick={handleStart}
-              disabled={pageStep === "processing"}
+              disabled={pageStep !== "ready"}
               className={[
                 "w-full py-4 rounded-2xl text-sm font-semibold transition-all duration-150",
-                pageStep === "processing"
+                pageStep !== "ready"
                   ? "bg-zinc-200 text-zinc-400 cursor-not-allowed"
                   : "bg-zinc-900 text-white hover:bg-zinc-700 active:scale-[0.99]",
               ].join(" ")}
             >
-              {pageStep === "processing" ? (
+              {pageStep === "cropping" ? (
                 <span className="flex items-center justify-center gap-2">
-                  <svg
-                    className="animate-spin"
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.5"
-                  >
+                  <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+                  </svg>
+                  파일 크롭 중...
+                </span>
+              ) : pageStep === "processing" ? (
+                <span className="flex items-center justify-center gap-2">
+                  <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
                   </svg>
                   더빙 중...
@@ -315,6 +519,21 @@ export default function Home() {
                 "더빙 시작하기"
               )}
             </button>
+          </div>
+        )}
+
+        {/* Cropping Progress */}
+        {pageStep === "cropping" && (
+          <div className="rounded-2xl border border-zinc-100 bg-zinc-50 p-6 mb-8">
+            <p className="text-xs font-medium text-zinc-500 uppercase tracking-widest mb-3">
+              파일 크롭 중
+            </p>
+            <div className="flex items-center gap-3">
+              <div className="w-4 h-4 rounded-full border-2 border-zinc-600 flex-shrink-0" />
+              <span className="text-sm text-zinc-700 font-medium">
+                {formatTime(cropStart)} – {formatTime(cropEnd ?? 0)} 구간 추출 중...
+              </span>
+            </div>
           </div>
         )}
 
