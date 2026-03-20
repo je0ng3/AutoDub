@@ -31,14 +31,20 @@ npm run test:coverage # 커버리지 리포트
 - **NextAuth.js v5 (beta)** — Google OAuth 인증
 - **Vitest + Testing Library** — 단위/컴포넌트 테스트
 - **Turso (libSQL)** — 데이터베이스 (회원 화이트리스트 관리)
+- **fluent-ffmpeg + ffmpeg-static** — 서버 사이드 비디오 크롭 및 오디오 먹싱
+- **@ffmpeg/ffmpeg (WASM)** — 클라이언트 사이드 오디오 크롭
 - **Vercel** — 배포
 
 ## 더빙 파이프라인
 
+0. **구간 크롭** — 사용자가 슬라이더로 시작/끝 지점 선택 (최대 60초)
+   - 오디오: 클라이언트에서 FFmpeg WASM으로 크롭
+   - 비디오: 서버에서 fluent-ffmpeg으로 크롭 + `-movflags +faststart` (WASM stream copy가 컨테이너를 손상시키므로)
 1. **전사** — 업로드된 파일에서 음성 추출 → ElevenLabs STT API로 텍스트 전사
 2. **번역** — 전사 텍스트를 ElevenLabs API로 타겟 언어 번역
 3. **합성** — 번역 텍스트를 ElevenLabs TTS API로 타겟 언어 음성 생성
-4. **결과 제공** — 더빙된 오디오/비디오 재생 및 다운로드
+4. **먹싱** — 비디오의 경우 더빙 오디오를 원본 영상에 합성 (비디오 길이 기준)
+5. **결과 제공** — 더빙된 오디오/비디오 재생 및 다운로드
 
 ## 인증 및 접근 제어
 
@@ -51,14 +57,19 @@ npm run test:coverage # 커버리지 리포트
 애플리케이션 코드는 `app/`에 위치합니다:
 
 - `app/layout.tsx` — 루트 레이아웃; Geist Sans + Geist Mono 폰트 및 전역 CSS 설정
-- `app/page.tsx` — 홈 페이지
+- `app/page.tsx` — 홈 페이지; 파일 업로드, 구간 슬라이더, 더빙 진행 상태 UI
 - `app/globals.css` — 전역 스타일; CSS 커스텀 속성 및 Tailwind 테마 토큰
-- `app/api/` — API 라우트 (더빙 처리, 인증 등)
-
-주요 예정 디렉토리:
-- `app/api/dub/` — 더빙 파이프라인 API 라우트
+- `app/api/dub/route.ts` — 더빙 파이프라인 API 라우트 (raw body + 헤더 방식)
 - `app/api/auth/` — NextAuth.js 핸들러
-- `lib/` — ElevenLabs 클라이언트, Turso DB 클라이언트, 번역 모델 유틸리티
+
+`lib/` 디렉토리:
+- `lib/elevenlabs.ts` — ElevenLabs 더빙 API 클라이언트
+- `lib/ffmpeg.ts` — 서버 사이드 비디오 크롭(`cropAndPrepareVideo`) 및 오디오 먹싱(`muxVideoWithAudio`)
+- `lib/ffmpeg.test.ts` — FFmpeg 유틸리티 단위 테스트 (12개)
+- `lib/db.ts` — Turso DB 클라이언트 (화이트리스트 관리)
+
+설정 파일:
+- `next.config.ts` — `experimental.proxyClientMaxBodySize: 2GB` (대용량 비디오 업로드용)
 
 
 ## 개발 규칙
