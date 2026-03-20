@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { signOut } from "next-auth/react";
+import { upload } from "@vercel/blob/client";
 
 const LANGUAGES = [
   { code: "ko", label: "한국어" },
@@ -181,6 +182,21 @@ export default function Home() {
     }
 
     setPageStep("processing");
+
+    // Vercel Blob에 먼저 업로드 (Vercel Serverless 4.5MB 제한 우회)
+    let blobUrl: string;
+    try {
+      const blob = await upload(fileToSend.name, fileToSend, {
+        access: "public",
+        handleUploadUrl: "/api/upload",
+      });
+      blobUrl = blob.url;
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "파일 업로드 중 오류가 발생했습니다.");
+      setPageStep("error");
+      return;
+    }
+
     setActiveStep("transcribing");
 
     // 비디오 파일의 크롭 파라미터는 헤더로 서버에 전달
@@ -193,13 +209,12 @@ export default function Home() {
     const res = await fetch("/api/dub", {
       method: "POST",
       headers: {
-        "Content-Type": "application/octet-stream",
         "x-target-lang": targetLang,
         "x-file-type": fileToSend.type,
         "x-file-name": encodeURIComponent(fileToSend.name),
+        "x-blob-url": blobUrl,
         ...extraHeaders,
       },
-      body: fileToSend,
     });
     if (!res.ok || !res.body) {
       setErrorMessage("서버 오류가 발생했습니다.");
