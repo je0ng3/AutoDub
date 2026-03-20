@@ -186,7 +186,9 @@ export default function Home() {
     // Vercel Blob에 먼저 업로드 (Vercel Serverless 4.5MB 제한 우회)
     let blobUrl: string;
     try {
-      const blob = await upload(fileToSend.name, fileToSend, {
+      const ext = fileToSend.name.includes(".") ? fileToSend.name.split(".").pop() : "";
+      const uniqueName = `${crypto.randomUUID()}${ext ? `.${ext}` : ""}`;
+      const blob = await upload(uniqueName, fileToSend, {
         access: "public",
         handleUploadUrl: "/api/upload",
       });
