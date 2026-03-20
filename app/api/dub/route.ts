@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { getDubbedAudio, getDubbingStatus, startDubbing } from "@/lib/elevenlabs";
-import { isVideoFile, muxVideoWithAudio } from "@/lib/ffmpeg";
+import { isVideoFile, muxVideoWithAudio, cropAndPrepareVideo } from "@/lib/ffmpeg";
 
 // 인메모리 결과 저장소 (단일 인스턴스 전용 — 프로덕션에서는 오브젝트 스토리지로 교체)
 const results = new Map<string, { buffer: Buffer; mimeType: string; filename: string }>();
@@ -11,20 +11,44 @@ function send(controller: ReadableStreamDefaultController, data: object) {
 }
 
 export async function POST(req: Request) {
-  const formData = await req.formData();
-  const file = formData.get("file") as File | null;
-  const targetLang = formData.get("targetLang") as string | null;
-
-  if (!file || !targetLang) {
-    return new Response("Missing file or targetLang", { status: 400 });
+  const targetLang = req.headers.get("x-target-lang");
+  const fileType = req.headers.get("x-file-type") ?? "application/octet-stream";
+  const fileName = decodeURIComponent(req.headers.get("x-file-name") ?? "file");
+  if (!targetLang) {
+    return new Response("Missing targetLang", { status: 400 });
   }
+
+  const cropStartHeader = req.headers.get("x-crop-start");
+  const cropEndHeader = req.headers.get("x-crop-end");
+
+  const arrayBuffer = await req.arrayBuffer();
+  if (!arrayBuffer.byteLength) {
+    return new Response("Empty body", { status: 400 });
+  }
+
+  const file = new File([arrayBuffer], fileName, { type: fileType });
 
   const stream = new ReadableStream({
     async start(controller) {
       try {
         // 1단계: STT (ElevenLabs 더빙 내부에서 전사 시작)
         send(controller, { step: "transcribing" });
-        const dubbingId = await startDubbing(file, targetLang);
+
+        // 비디오: 서버에서 크롭 + moov atom 앞으로 이동
+        // (클라이언트 WASM stream copy는 컨테이너를 깨뜨리므로 서버에서 처리)
+        let fileForDubbing = file;
+        let preparedVideoBuffer: Buffer | null = null;
+        if (isVideoFile(file)) {
+          const startSec = cropStartHeader ? parseFloat(cropStartHeader) : 0;
+          const endSec = cropEndHeader ? parseFloat(cropEndHeader) : NaN;
+          const durationSec = isNaN(endSec) ? undefined : endSec - startSec;
+          // File 래퍼를 거치지 않고 req.arrayBuffer()에서 직접 복사
+          const raw = Buffer.from(new Uint8Array(arrayBuffer));
+          preparedVideoBuffer = await cropAndPrepareVideo(raw, file.type, startSec, durationSec);
+          fileForDubbing = new File([new Uint8Array(preparedVideoBuffer)], file.name, { type: "video/mp4" });
+        }
+
+        const dubbingId = await startDubbing(fileForDubbing, targetLang);
 
         // 2-3단계: 완료될 때까지 폴링하면서 UI 단계 진행
         let pollCount = 0;
@@ -53,9 +77,9 @@ export async function POST(req: Request) {
         let filename: string;
 
         if (isVideoFile(file)) {
-          const videoBuffer = Buffer.from(await file.arrayBuffer());
-          buffer = await muxVideoWithAudio(videoBuffer, audioBuffer, file.type);
-          mimeType = file.type;
+          // preparedVideoBuffer는 반드시 존재 (위에서 video 분기에서 설정됨)
+          buffer = await muxVideoWithAudio(preparedVideoBuffer!, audioBuffer, "video/mp4");
+          mimeType = "video/mp4";
           filename = "dubbed.mp4";
         } else {
           buffer = audioBuffer;
