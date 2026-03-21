@@ -4,8 +4,8 @@ import { promisify } from "util";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
-import { writeFile, unlink } from "fs/promises";
-import { isVideoFile, cropAndPrepareVideo, muxVideoWithAudio } from "./ffmpeg";
+import { readFile, writeFile, unlink } from "fs/promises";
+import { isVideoFile, cropAndPrepareVideo, muxVideoWithAudio, detectSpeechSegments } from "./ffmpeg";
 
 const execFileAsync = promisify(execFile);
 const ffmpegBin = join(process.cwd(), "node_modules", "ffmpeg-static", "ffmpeg");
@@ -20,7 +20,6 @@ async function makeTestVideo(durationSec: number, format: "mp4" | "mov" = "mp4")
     "-t", String(durationSec),
     "-y", outputPath,
   ]);
-  const { readFile } = await import("fs/promises");
   const buf = await readFile(outputPath);
   await unlink(outputPath);
   return buf;
@@ -35,7 +34,47 @@ async function makeTestAudio(durationSec: number): Promise<Buffer> {
     "-t", String(durationSec),
     "-y", outputPath,
   ]);
-  const { readFile } = await import("fs/promises");
+  const buf = await readFile(outputPath);
+  await unlink(outputPath);
+  return buf;
+}
+
+/**
+ * 발화-묵음 패턴을 가진 오디오 생성.
+ * tone은 440Hz sine, silence는 묵음.
+ * 예) [{type:"tone",sec:2},{type:"silence",sec:1},{type:"tone",sec:2}]
+ */
+async function makeAudioWithGaps(
+  patterns: Array<{ type: "tone" | "silence"; sec: number }>
+): Promise<Buffer> {
+  // 세그먼트별 파일 생성 후 concat
+  const segPaths: string[] = [];
+  for (const p of patterns) {
+    const segPath = join(tmpdir(), `${randomUUID()}.mp3`);
+    const source = p.type === "tone"
+      ? `sine=frequency=440:duration=${p.sec}`
+      : `anullsrc=r=44100:cl=mono`;
+    await execFileAsync(ffmpegBin, [
+      "-f", "lavfi", "-i", source,
+      "-c:a", "libmp3lame",
+      "-t", String(p.sec),
+      "-y", segPath,
+    ]);
+    segPaths.push(segPath);
+  }
+
+  const outputPath = join(tmpdir(), `${randomUUID()}.mp3`);
+  const inputs = segPaths.flatMap((p) => ["-i", p]);
+  const filterInputs = segPaths.map((_, i) => `[${i}:a]`).join("");
+  await execFileAsync(ffmpegBin, [
+    ...inputs,
+    "-filter_complex", `${filterInputs}concat=n=${segPaths.length}:v=0:a=1[out]`,
+    "-map", "[out]",
+    "-c:a", "libmp3lame",
+    "-y", outputPath,
+  ]);
+
+  await Promise.all(segPaths.map((p) => unlink(p).catch(() => {})));
   const buf = await readFile(outputPath);
   await unlink(outputPath);
   return buf;
@@ -157,6 +196,43 @@ describe("cropAndPrepareVideo", () => {
   }, 60_000);
 });
 
+// ─── detectSpeechSegments ─────────────────────────────────────────────────────
+
+describe("detectSpeechSegments", () => {
+  it("연속 음성에서 1개의 발화 구간을 반환한다", async () => {
+    const audio = await makeTestAudio(5);
+    const tmpPath = join(tmpdir(), `${randomUUID()}.mp3`);
+    await writeFile(tmpPath, audio);
+    try {
+      const segs = await detectSpeechSegments(tmpPath, 5);
+      expect(segs.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      await unlink(tmpPath).catch(() => {});
+    }
+  }, 30_000);
+
+  it("중간에 묵음이 있으면 2개의 발화 구간을 반환한다", async () => {
+    // 2s 발화 → 1.5s 묵음 → 2s 발화
+    const audio = await makeAudioWithGaps([
+      { type: "tone", sec: 2 },
+      { type: "silence", sec: 1.5 },
+      { type: "tone", sec: 2 },
+    ]);
+    const tmpPath = join(tmpdir(), `${randomUUID()}.mp3`);
+    await writeFile(tmpPath, audio);
+    try {
+      const segs = await detectSpeechSegments(tmpPath, 5.5);
+      expect(segs.length).toBe(2);
+      // 첫 발화는 0초 근처에서 시작
+      expect(segs[0].start).toBeCloseTo(0, 0);
+      // 두 번째 발화는 3초 근처에서 시작 (2s + 1.5s 묵음)
+      expect(segs[1].start).toBeGreaterThan(2);
+    } finally {
+      await unlink(tmpPath).catch(() => {});
+    }
+  }, 30_000);
+});
+
 // ─── muxVideoWithAudio ────────────────────────────────────────────────────────
 
 describe("muxVideoWithAudio", () => {
@@ -170,14 +246,25 @@ describe("muxVideoWithAudio", () => {
     expect(duration).toBeCloseTo(5, 0);
   }, 60_000);
 
-  it("더빙 오디오가 비디오보다 짧아도 비디오 길이에 맞춰 출력한다", async () => {
+  it("더빙 오디오가 비디오보다 짧으면 발화 구간 싱크로 비디오 길이에 맞춘다", async () => {
     const video = await makeTestVideo(10, "mp4");
-    const audio = await makeTestAudio(4);
+    const audio = await makeTestAudio(8);
     const result = await muxVideoWithAudio(video, audio, "video/mp4");
 
     expect(result.byteLength).toBeGreaterThan(1000);
     const duration = await getDuration(result, "mp4");
     expect(duration).toBeCloseTo(10, 0);
+    expect(await hasAudioStream(result, "mp4")).toBe(true);
+  }, 60_000);
+
+  it("더빙 오디오가 비디오보다 길면 발화 구간 싱크로 비디오 길이에 맞춘다", async () => {
+    const video = await makeTestVideo(5, "mp4");
+    const audio = await makeTestAudio(7);
+    const result = await muxVideoWithAudio(video, audio, "video/mp4");
+
+    expect(result.byteLength).toBeGreaterThan(1000);
+    const duration = await getDuration(result, "mp4");
+    expect(duration).toBeCloseTo(5, 0);
   }, 60_000);
 
   it("결과 영상에 오디오 스트림이 포함된다", async () => {
@@ -196,5 +283,22 @@ describe("muxVideoWithAudio", () => {
     expect(result.byteLength).toBeGreaterThan(1000);
     const duration = await getDuration(result, "mp4");
     expect(duration).toBeCloseTo(5, 0);
+  }, 60_000);
+
+  it("더빙 오디오에 묵음 구간이 있을 때 발화별 싱크를 맞춘다", async () => {
+    // 원본: 3s 음성 포함 비디오
+    // 더빙: 2s 발화 → 0.5s 묵음 → 2s 발화 (총 4.5s, 원본보다 짧음)
+    const video = await makeTestVideo(6, "mp4");
+    const audio = await makeAudioWithGaps([
+      { type: "tone", sec: 2 },
+      { type: "silence", sec: 0.5 },
+      { type: "tone", sec: 2 },
+    ]);
+    const result = await muxVideoWithAudio(video, audio, "video/mp4");
+
+    expect(result.byteLength).toBeGreaterThan(1000);
+    const duration = await getDuration(result, "mp4");
+    expect(duration).toBeCloseTo(6, 0);
+    expect(await hasAudioStream(result, "mp4")).toBe(true);
   }, 60_000);
 });

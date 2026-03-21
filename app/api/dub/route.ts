@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { del } from "@vercel/blob";
 import { getDubbedAudio, getDubbingStatus, startDubbing } from "@/lib/elevenlabs";
 import { isVideoFile, muxVideoWithAudio, cropAndPrepareVideo } from "@/lib/ffmpeg";
 
@@ -14,14 +15,24 @@ export async function POST(req: Request) {
   const targetLang = req.headers.get("x-target-lang");
   const fileType = req.headers.get("x-file-type") ?? "application/octet-stream";
   const fileName = decodeURIComponent(req.headers.get("x-file-name") ?? "file");
+  const blobUrl = req.headers.get("x-blob-url");
   if (!targetLang) {
     return new Response("Missing targetLang", { status: 400 });
+  }
+  if (!blobUrl) {
+    return new Response("Missing blob URL", { status: 400 });
   }
 
   const cropStartHeader = req.headers.get("x-crop-start");
   const cropEndHeader = req.headers.get("x-crop-end");
 
-  const arrayBuffer = await req.arrayBuffer();
+  const blobRes = await fetch(blobUrl);
+  if (!blobRes.ok) {
+    return new Response("Failed to fetch uploaded file", { status: 500 });
+  }
+  const arrayBuffer = await blobRes.arrayBuffer();
+  await del(blobUrl);
+
   if (!arrayBuffer.byteLength) {
     return new Response("Empty body", { status: 400 });
   }
@@ -93,9 +104,20 @@ export async function POST(req: Request) {
 
         send(controller, { step: "done", resultId });
       } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err);
+        let message = raw;
+        try {
+          const parsed = JSON.parse(raw);
+          const detail = parsed?.detail ?? parsed;
+          if (detail?.code === "quota_exceeded") {
+            message = "ElevenLabs 크레딧이 부족합니다. 플랜을 업그레이드하거나 다음 달 초기화를 기다려 주세요.";
+          } else if (detail?.message) {
+            message = detail.message;
+          }
+        } catch { /* raw가 JSON이 아닌 경우 그대로 사용 */ }
         send(controller, {
           step: "error",
-          message: err instanceof Error ? err.message : "알 수 없는 오류",
+          message,
         });
       } finally {
         controller.close();
