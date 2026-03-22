@@ -57,7 +57,8 @@ npm run test:coverage # 커버리지 리포트
 애플리케이션 코드는 `app/`에 위치합니다:
 
 - `app/layout.tsx` — 루트 레이아웃; Geist Sans + Geist Mono 폰트 및 전역 CSS 설정
-- `app/page.tsx` — 홈 페이지; 파일 업로드, 구간 슬라이더, 더빙 진행 상태 UI
+- `app/providers.tsx` — 클라이언트 사이드 `SessionProvider` 래퍼 (useSession 컨텍스트 제공)
+- `app/page.tsx` — 홈 페이지; 파일 업로드, 구간 슬라이더, 더빙 진행 상태 UI; 미인증 사용자 로그인 팝업
 - `app/globals.css` — 전역 스타일; CSS 커스텀 속성 및 Tailwind 테마 토큰
 - `app/api/dub/route.ts` — 더빙 파이프라인 API 라우트 (raw body + 헤더 방식)
 - `app/api/auth/` — NextAuth.js 핸들러
