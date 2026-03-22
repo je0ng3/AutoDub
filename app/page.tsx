@@ -1,7 +1,8 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { signOut } from "next-auth/react";
+import { signOut, useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
 import { upload } from "@vercel/blob/client";
 
 const LANGUAGES = [
@@ -111,6 +112,8 @@ function formatTime(sec: number): string {
 }
 
 export default function Home() {
+  const { data: session } = useSession();
+  const router = useRouter();
   const [pageStep, setPageStep] = useState<PageStep>("idle");
   const [file, setFile] = useState<File | null>(null);
   const [targetLang, setTargetLang] = useState("en");
@@ -122,9 +125,19 @@ export default function Home() {
   const [fileDuration, setFileDuration] = useState<number | null>(null);
   const [cropStart, setCropStart] = useState(0);
   const [cropEnd, setCropEnd] = useState<number | null>(null);
+  const [showLoginPopup, setShowLoginPopup] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  function requireAuth(): boolean {
+    if (!session) {
+      setShowLoginPopup(true);
+      return false;
+    }
+    return true;
+  }
+
   function handleFile(f: File) {
+    if (!requireAuth()) return;
     setFile(f);
     setCropStart(0);
     setCropEnd(null);
@@ -157,7 +170,7 @@ export default function Home() {
   }
 
   async function handleStart() {
-    if (!file) return;
+    if (!file || !requireAuth()) return;
 
     setDoneSteps(new Set());
     setResultId(null);
@@ -285,6 +298,29 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-white text-zinc-900 font-sans antialiased">
+      {/* Login Required Popup */}
+      {showLoginPopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl p-8 mx-4 max-w-sm w-full text-center">
+            <p className="text-base font-semibold text-zinc-900 mb-2">로그인이 필요합니다</p>
+            <p className="text-sm text-zinc-500 mb-6">이 기능을 사용하려면 먼저 로그인해 주세요.</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowLoginPopup(false)}
+                className="flex-1 py-2.5 rounded-xl border border-zinc-200 text-sm text-zinc-600 hover:border-zinc-400 transition-colors"
+              >
+                취소
+              </button>
+              <button
+                onClick={() => router.push("/login")}
+                className="flex-1 py-2.5 rounded-xl bg-zinc-900 text-sm text-white font-semibold hover:bg-zinc-700 transition-colors"
+              >
+                로그인하기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Header */}
       <header className="border-b border-zinc-100 px-6 py-4">
         <div className="max-w-2xl mx-auto flex items-center justify-between">
