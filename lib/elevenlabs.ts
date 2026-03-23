@@ -1,3 +1,4 @@
+import type { ReadStream } from "fs";
 import { ElevenLabsClient } from "elevenlabs";
 
 export const elevenlabs = new ElevenLabsClient({
@@ -5,7 +6,7 @@ export const elevenlabs = new ElevenLabsClient({
 });
 
 export async function startDubbing(
-  file: File,
+  file: File | ReadStream | Blob,
   targetLang: string
 ): Promise<string> {
   const result = await elevenlabs.dubbing.dubAVideoOrAnAudioFile({
