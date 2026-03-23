@@ -236,12 +236,22 @@ export default function Home() {
           <span className="text-sm font-semibold tracking-tight text-zinc-900">
             AOTO DUB
           </span>
-          <button
-            onClick={() => signOut({ callbackUrl: "/login" })}
-            className="text-xs text-zinc-400 hover:text-zinc-600 transition-colors cursor-pointer"
-          >
-            로그아웃
-          </button>
+          <div className="flex items-center gap-4">
+            {session?.user?.isAdmin && (
+              <a
+                href="/admin"
+                className="text-xs text-zinc-400 hover:text-zinc-600 transition-colors"
+              >
+                관리자
+              </a>
+            )}
+            <button
+              onClick={() => signOut({ callbackUrl: "/login" })}
+              className="text-xs text-zinc-400 hover:text-zinc-600 transition-colors cursor-pointer"
+            >
+              로그아웃
+            </button>
+          </div>
         </div>
       </header>
 
