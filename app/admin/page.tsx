@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation"
+import Link from "next/link"
 import { auth, signOut } from "@/auth"
 import {
   isEmailWhitelisted,
@@ -41,7 +42,7 @@ export default async function AdminPage() {
     <div className="min-h-screen bg-background">
       <header className="border-b border-black/[.08] dark:border-white/[.08] px-6 py-4">
         <div className="max-w-2xl mx-auto flex items-center justify-between">
-          <a href="/" className="text-sm font-semibold tracking-tight">AOTO DUB</a>
+          <Link href="/" className="text-sm font-semibold tracking-tight">AOTO DUB</Link>
           <form action={handleSignOut}>
             <button type="submit" className="text-xs text-foreground/40 hover:text-foreground/60 transition-colors cursor-pointer">
               로그아웃
