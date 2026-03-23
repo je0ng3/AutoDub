@@ -8,7 +8,9 @@
 - 파일 업로드 후 구간 슬라이더로 시작/끝 지점 선택 (최대 60초)
 - ElevenLabs API를 활용한 전사 → 번역 → 음성 합성 파이프라인
 - 더빙된 오디오/비디오 재생 및 다운로드
-- Google OAuth 로그인 + 화이트리스트 기반 접근 제어
+- Google OAuth 로그인 + 화이트리스트(관리자) / 일반 사용자 기반 접근 제어
+- 미승인 사용자의 접근 요청 기능 (관리자 승인 후 이용 가능)
+- 관리자 페이지에서 접근 요청 승인, 일반 사용자 추가/삭제
 
 ## 기술 스택
 
@@ -18,7 +20,7 @@
 - **fluent-ffmpeg + ffmpeg-static** — 서버 사이드 비디오 크롭 및 오디오 먹싱
 - **@ffmpeg/ffmpeg (WASM)** — 클라이언트 사이드 오디오 크롭
 - **NextAuth.js v5** — Google OAuth 인증
-- **Turso (libSQL)** — 화이트리스트 DB
+- **Turso (libSQL)** — 관리자 화이트리스트 / 일반 사용자 / 접근 요청 DB
 - **Vitest** — 단위 테스트
 
 
@@ -65,9 +67,20 @@ TURSO_AUTH_TOKEN=           # Turso 인증 토큰
 > **참고**: Google OAuth 클라이언트는 [Google Cloud Console](https://console.cloud.google.com)에서,
 > ElevenLabs API 키는 [ElevenLabs](https://elevenlabs.io) 대시보드에서 발급받을 수 있습니다.
 
-### 4. Turso DB 이메일 화이트리스트 설정
+### 4. Turso DB 설정
 
-Turso DB에 접근 허용할 사용자 이메일을 등록해야 로그인이 가능합니다.
+Turso DB에는 아래 3개 테이블이 사용됩니다. `users`와 `access_requests`는 서버 최초 실행 시 자동 생성되며, `whitelist`는 수동으로 생성 및 관리합니다.
+
+```sql
+-- 관리자 (수동 관리)
+CREATE TABLE whitelist (email TEXT PRIMARY KEY);
+INSERT INTO whitelist (email) VALUES ('admin@example.com');
+
+-- 일반 사용자 / 접근 요청 (서버 실행 시 자동 생성)
+-- users, access_requests 테이블은 자동 생성됩니다.
+```
+
+관리자(`whitelist`)로 등록된 계정은 `/admin` 페이지에서 접근 요청을 승인하고 일반 사용자를 관리할 수 있습니다.
 
 ### 5. 개발 서버 실행
 
