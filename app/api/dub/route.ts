@@ -1,7 +1,10 @@
 import { randomUUID } from "crypto";
+import { join } from "path";
+import { tmpdir } from "os";
+import { writeFile, readFile, unlink } from "fs/promises";
 import { del } from "@vercel/blob";
 import { getDubbedAudio, getDubbingStatus, startDubbing } from "@/lib/elevenlabs";
-import { isVideoFile, muxVideoWithAudio, cropAndPrepareVideo } from "@/lib/ffmpeg";
+import { extractAudio, isVideoMime, muxVideoWithAudio } from "@/lib/ffmpeg";
 
 // 인메모리 결과 저장소 (단일 인스턴스 전용 — 프로덕션에서는 오브젝트 스토리지로 교체)
 const results = new Map<string, { buffer: Buffer; mimeType: string; filename: string }>();
@@ -16,6 +19,8 @@ export async function POST(req: Request) {
   const fileType = req.headers.get("x-file-type") ?? "application/octet-stream";
   const fileName = decodeURIComponent(req.headers.get("x-file-name") ?? "file");
   const blobUrl = req.headers.get("x-blob-url");
+  const originalFileType = req.headers.get("x-original-file-type") ?? fileType;
+  const originalFileName = decodeURIComponent(req.headers.get("x-original-file-name") ?? fileName);
   if (!targetLang) {
     return new Response("Missing targetLang", { status: 400 });
   }
@@ -23,43 +28,42 @@ export async function POST(req: Request) {
     return new Response("Missing blob URL", { status: 400 });
   }
 
-  const cropStartHeader = req.headers.get("x-crop-start");
-  const cropEndHeader = req.headers.get("x-crop-end");
-
-  const blobRes = await fetch(blobUrl);
-  if (!blobRes.ok) {
-    return new Response("Failed to fetch uploaded file", { status: 500 });
-  }
-  const arrayBuffer = await blobRes.arrayBuffer();
-  await del(blobUrl);
-
-  if (!arrayBuffer.byteLength) {
-    return new Response("Empty body", { status: 400 });
-  }
-
-  const file = new File([arrayBuffer], fileName, { type: fileType });
-
   const stream = new ReadableStream({
     async start(controller) {
+      let videoTmpPath: string | null = null;
+      let audioTmpPath: string | null = null;
       try {
-        // 1단계: STT (ElevenLabs 더빙 내부에서 전사 시작)
+        // blob fetch를 stream 내부에서 수행해 arrayBuffer를 디스크 기록 후 GC 허용
+        const blobRes = await fetch(blobUrl);
+        if (!blobRes.ok) throw new Error("Failed to fetch uploaded file");
+        let arrayBuffer: ArrayBuffer | null = await blobRes.arrayBuffer();
+        await del(blobUrl);
+        if (!arrayBuffer.byteLength) throw new Error("Empty body");
+
         send(controller, { step: "transcribing" });
 
-        // 비디오: 서버에서 크롭 + moov atom 앞으로 이동
-        // (클라이언트 WASM stream copy는 컨테이너를 깨뜨리므로 서버에서 처리)
-        let fileForDubbing = file;
-        let preparedVideoBuffer: Buffer | null = null;
-        if (isVideoFile(file)) {
-          const startSec = cropStartHeader ? parseFloat(cropStartHeader) : 0;
-          const endSec = cropEndHeader ? parseFloat(cropEndHeader) : NaN;
-          const durationSec = isNaN(endSec) ? undefined : endSec - startSec;
-          // File 래퍼를 거치지 않고 req.arrayBuffer()에서 직접 복사
-          const raw = Buffer.from(new Uint8Array(arrayBuffer));
-          preparedVideoBuffer = await cropAndPrepareVideo(raw, file.type, startSec, durationSec);
-          fileForDubbing = new File([new Uint8Array(preparedVideoBuffer)], file.name, { type: "video/mp4" });
+        const isVideo = isVideoMime(fileType);
+
+        if (isVideo) {
+          // 비디오: 디스크에 한 번만 기록 → extractAudio · muxVideoWithAudio가 경로 공유
+          const ext = fileType === "video/quicktime" ? "mov" : fileType.split("/")[1];
+          videoTmpPath = join(tmpdir(), `${randomUUID()}-video.${ext}`);
+          await writeFile(videoTmpPath, Buffer.from(arrayBuffer));
+          arrayBuffer = null; // 더빙 대기 중 GC 허용
+
+          audioTmpPath = join(tmpdir(), `${randomUUID()}-dubbing-audio.mp3`);
+          await writeFile(audioTmpPath, await extractAudio(videoTmpPath));
+        } else {
+          // 오디오: File 생성자 복사 없이 디스크 기록 후 ReadStream 전달
+          const ext = fileType.split("/")[1] ?? "bin";
+          audioTmpPath = join(tmpdir(), `${randomUUID()}-audio.${ext}`);
+          await writeFile(audioTmpPath, Buffer.from(arrayBuffer));
+          arrayBuffer = null;
         }
 
-        const dubbingId = await startDubbing(fileForDubbing, targetLang);
+        const audioMime = isVideo ? "audio/mpeg" : fileType;
+        const audioBlob = new Blob([await readFile(audioTmpPath!)], { type: audioMime });
+        const dubbingId = await startDubbing(audioBlob, targetLang);
 
         // 2-3단계: 완료될 때까지 폴링하면서 UI 단계 진행
         let pollCount = 0;
@@ -87,11 +91,13 @@ export async function POST(req: Request) {
         let mimeType: string;
         let filename: string;
 
-        if (isVideoFile(file)) {
-          // preparedVideoBuffer는 반드시 존재 (위에서 video 분기에서 설정됨)
-          buffer = await muxVideoWithAudio(preparedVideoBuffer!, audioBuffer, "video/mp4");
-          mimeType = "video/mp4";
-          filename = "dubbed.mp4";
+        if (isVideo && videoTmpPath) {
+          buffer = await muxVideoWithAudio(videoTmpPath, audioBuffer, fileType, originalFileType);
+          mimeType = originalFileType;
+          const origExt = originalFileName.includes(".")
+            ? originalFileName.split(".").pop()
+            : originalFileType === "video/quicktime" ? "mov" : originalFileType.split("/")[1];
+          filename = `dubbed.${origExt}`;
         } else {
           buffer = audioBuffer;
           mimeType = "audio/mpeg";
@@ -115,11 +121,12 @@ export async function POST(req: Request) {
             message = detail.message;
           }
         } catch { /* raw가 JSON이 아닌 경우 그대로 사용 */ }
-        send(controller, {
-          step: "error",
-          message,
-        });
+        send(controller, { step: "error", message });
       } finally {
+        await Promise.all([
+          videoTmpPath ? unlink(videoTmpPath).catch(() => {}) : Promise.resolve(),
+          audioTmpPath ? unlink(audioTmpPath).catch(() => {}) : Promise.resolve(),
+        ]);
         controller.close();
       }
     },

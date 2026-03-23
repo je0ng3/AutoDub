@@ -65,8 +65,9 @@ npm run test:coverage # 커버리지 리포트
 
 `lib/` 디렉토리:
 - `lib/elevenlabs.ts` — ElevenLabs 더빙 API 클라이언트
-- `lib/ffmpeg.ts` — 서버 사이드 비디오 크롭(`cropAndPrepareVideo`) 및 오디오 먹싱(`muxVideoWithAudio`)
-- `lib/ffmpeg.test.ts` — FFmpeg 유틸리티 단위 테스트 (12개)
+- `lib/ffmpeg.ts` — 서버 사이드 오디오 추출(`extractAudio`) 및 오디오 먹싱(`muxVideoWithAudio`)
+- `lib/ffmpeg.test.ts` — FFmpeg 유틸리티 단위 테스트
+- `lib/ffmpeg-client.ts` — 클라이언트 사이드 FFmpeg WASM 유틸리티 (`loadFFmpeg`, `cropFileOnClient`, `formatTime`)
 - `lib/db.ts` — Turso DB 클라이언트 (화이트리스트 관리)
 
 설정 파일:
