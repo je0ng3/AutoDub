@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { signOut, useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { upload } from "@vercel/blob/client";
+import { cropFileOnClient, formatTime, MAX_CROP_DURATION } from "@/lib/ffmpeg-client";
 
 const LANGUAGES = [
   { code: "ko", label: "한국어" },
@@ -25,91 +26,6 @@ const PIPELINE_STEPS = [
 type PipelineKey = (typeof PIPELINE_STEPS)[number]["key"];
 type PageStep = "idle" | "ready" | "cropping" | "processing" | "done" | "error";
 
-// FFmpeg WASM 싱글턴 
-let ffmpegInstance: import("@ffmpeg/ffmpeg").FFmpeg | null = null;
-let ffmpegLoadPromise: Promise<import("@ffmpeg/ffmpeg").FFmpeg> | null = null;
-
-async function loadFFmpeg() {
-  if (ffmpegInstance) return ffmpegInstance;
-  if (ffmpegLoadPromise) return ffmpegLoadPromise;
-
-  ffmpegLoadPromise = (async () => {
-    const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-    const { toBlobURL } = await import("@ffmpeg/util");
-    const ff = new FFmpeg();
-    const base = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd";
-    await ff.load({
-      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, "text/javascript"),
-      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
-    });
-    ffmpegInstance = ff;
-    return ff;
-  })();
-
-  return ffmpegLoadPromise;
-}
-
-async function cropFileOnClient(
-  file: File,
-  startSec: number,
-  endSec: number
-): Promise<File> {
-  const durationSec = endSec - startSec;
-  const { fetchFile } = await import("@ffmpeg/util");
-  const ff = await loadFFmpeg();
-  const MIME_EXT: Record<string, string> = {
-    "audio/mpeg": "mp3",
-    "audio/mp4": "m4a",
-    "audio/x-m4a": "m4a",
-    "audio/x-wav": "wav",
-    "audio/x-flac": "flac",
-    "video/quicktime": "mov",
-    "video/x-msvideo": "avi",
-    "video/x-matroska": "mkv",
-  };
-  const sub = file.type.split("/")[1] ?? "";
-  const ext = MIME_EXT[file.type] ?? (sub.startsWith("x-") ? sub.slice(2) : sub);
-  const input = `input.${ext}`;
-  const output = `output.${ext}`;
-
-  await ff.writeFile(input, await fetchFile(file));
-
-  const isVideo = file.type.startsWith("video/");
-  const args = isVideo
-    ? [
-        "-ss", String(startSec),
-        "-i", input,
-        "-t", String(durationSec),
-        "-c", "copy",
-        "-y", output,
-      ]
-    : [
-        "-ss", String(startSec),
-        "-i", input,
-        "-t", String(durationSec),
-        "-c", "copy",
-        "-y", output,
-      ];
-
-  const exitCode = await ff.exec(args);
-  if (exitCode !== 0) throw new Error(`FFmpeg 종료 코드: ${exitCode} (파일 형식: ${file.type})`);
-  const data = await ff.readFile(output) as Uint8Array;
-  // deleteFile 전에 복사 — readFile은 WASM FS 메모리의 view를 반환하므로
-  // deleteFile 이후 참조하면 해제된 메모리를 읽게 된다
-  const copy = data.slice();
-  await ff.deleteFile(input);
-  await ff.deleteFile(output);
-
-  return new File([copy.buffer], file.name, { type: file.type });
-}
-
-const MAX_CROP_DURATION = 60;
-
-function formatTime(sec: number): string {
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
 
 export default function Home() {
   const { data: session } = useSession();
@@ -176,13 +92,12 @@ export default function Home() {
     setResultId(null);
     setErrorMessage(null);
 
-    const isVideo = file.type.startsWith("video/");
     const effectiveEnd = cropEnd ?? fileDuration ?? 0;
     const needsCrop = fileDuration !== null && (cropStart > 0 || effectiveEnd < fileDuration);
 
-    // 오디오 파일만 클라이언트에서 크롭 (비디오는 WASM 스트림 복사가 컨테이너를 깨뜨림)
+    // 크롭 필요 시: FFmpeg WASM으로 클라이언트에서 크롭 (stream copy, 무손실)
     let fileToSend = file;
-    if (!isVideo && needsCrop) {
+    if (needsCrop) {
       setPageStep("cropping");
       try {
         fileToSend = await cropFileOnClient(file, cropStart, effectiveEnd);
@@ -214,13 +129,6 @@ export default function Home() {
 
     setActiveStep("transcribing");
 
-    // 비디오 파일의 크롭 파라미터는 헤더로 서버에 전달
-    const extraHeaders: Record<string, string> = {};
-    if (isVideo && fileDuration !== null) {
-      extraHeaders["x-crop-start"] = String(cropStart);
-      extraHeaders["x-crop-end"] = String(effectiveEnd);
-    }
-
     const res = await fetch("/api/dub", {
       method: "POST",
       headers: {
@@ -228,7 +136,8 @@ export default function Home() {
         "x-file-type": fileToSend.type,
         "x-file-name": encodeURIComponent(fileToSend.name),
         "x-blob-url": blobUrl,
-        ...extraHeaders,
+        "x-original-file-type": file.type,
+        "x-original-file-name": encodeURIComponent(file.name),
       },
     });
     if (!res.ok || !res.body) {
@@ -327,12 +236,22 @@ export default function Home() {
           <span className="text-sm font-semibold tracking-tight text-zinc-900">
             AOTO DUB
           </span>
-          <button
-            onClick={() => signOut({ callbackUrl: "/login" })}
-            className="text-xs text-zinc-400 hover:text-zinc-600 transition-colors cursor-pointer"
-          >
-            로그아웃
-          </button>
+          <div className="flex items-center gap-4">
+            {session?.user?.isAdmin && (
+              <a
+                href="/admin"
+                className="text-xs text-zinc-400 hover:text-zinc-600 transition-colors"
+              >
+                관리자
+              </a>
+            )}
+            <button
+              onClick={() => signOut({ callbackUrl: "/login" })}
+              className="text-xs text-zinc-400 hover:text-zinc-600 transition-colors cursor-pointer"
+            >
+              로그아웃
+            </button>
+          </div>
         </div>
       </header>
 
@@ -358,7 +277,7 @@ export default function Home() {
             <input
               ref={fileInputRef}
               type="file"
-              accept="audio/*,video/*"
+              accept="audio/*,video/mp4,video/quicktime"
               className="hidden"
               onChange={handleFileChange}
               id="file-input"
@@ -709,7 +628,13 @@ export default function Home() {
 
               <a
                 href={audioUrl}
-                download={file?.type.startsWith("video/") ? "dubbed.mp4" : "dubbed.mp3"}
+                download={
+                  file?.type === "video/webm"
+                    ? "dubbed.webm"
+                    : file?.type.startsWith("video/")
+                      ? "dubbed.mp4"
+                      : "dubbed.mp3"
+                }
                 className="w-full py-3 rounded-xl border border-zinc-900 text-sm font-semibold text-zinc-900 hover:bg-zinc-900 hover:text-white transition-all duration-150 flex items-center justify-center gap-2"
               >
                 <svg
