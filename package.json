@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "prebuild": "node scripts/download-ffmpeg.js"
   },
   "dependencies": {
     "@auth/core": "^0.34.3",
