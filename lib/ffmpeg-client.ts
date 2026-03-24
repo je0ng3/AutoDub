@@ -12,10 +12,9 @@ export async function loadFFmpeg() {
     const { FFmpeg } = await import("@ffmpeg/ffmpeg");
     const { toBlobURL } = await import("@ffmpeg/util");
     const ff = new FFmpeg();
-    const base = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd";
     await ff.load({
-      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, "text/javascript"),
-      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
+      coreURL: await toBlobURL("/ffmpeg/ffmpeg-core.js", "text/javascript"),
+      wasmURL: await toBlobURL("/ffmpeg/ffmpeg-core.wasm", "application/wasm"),
     });
     ffmpegInstance = ff;
     return ff;
@@ -49,13 +48,11 @@ export async function cropFileOnClient(
 
   await ff.writeFile(input, await fetchFile(file));
 
-  const needsFaststart = file.type === "video/mp4" || file.type === "video/quicktime";
   const args = [
     "-ss", String(startSec),
     "-i", input,
     "-t", String(durationSec),
     "-c", "copy",
-    ...(needsFaststart ? ["-movflags", "+faststart"] : []),
     "-y", output,
   ];
 

@@ -38,7 +38,7 @@ npm run test:coverage # 커버리지 리포트
 ## 더빙 파이프라인
 
 0. **구간 크롭** — 사용자가 슬라이더로 시작/끝 지점 선택 (최대 60초)
-   - 오디오: 클라이언트에서 FFmpeg WASM으로 크롭
+   - 오디오: 클라이언트에서 FFmpeg WASM으로 크롭 (`-c copy`, faststart 없음)
    - 비디오: 서버에서 fluent-ffmpeg으로 크롭 + `-movflags +faststart` (WASM stream copy가 컨테이너를 손상시키므로)
 1. **전사** — 업로드된 파일에서 음성 추출 → ElevenLabs STT API로 텍스트 전사
 2. **번역** — 전사 텍스트를 ElevenLabs API로 타겟 언어 번역
@@ -71,7 +71,8 @@ npm run test:coverage # 커버리지 리포트
 - `lib/db.ts` — Turso DB 클라이언트 (화이트리스트 관리)
 
 설정 파일:
-- `next.config.ts` — `experimental.proxyClientMaxBodySize: 2GB` (대용량 비디오 업로드용)
+- `next.config.ts` — Next.js 설정
+- `scripts/download-ffmpeg.js` — FFmpeg WASM 파일(`public/ffmpeg/`) 다운로드 스크립트; `npm run build` 전 자동 실행 (`prebuild`)
 
 
 ## 개발 규칙
