@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Third-party generated files:
+    "public/ffmpeg/**",
+    // Node.js utility scripts
+    "scripts/**",
   ]),
 ]);
 

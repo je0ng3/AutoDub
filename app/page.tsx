@@ -616,7 +616,10 @@ export default function Home() {
                     controls
                     src={audioUrl}
                     className="w-full rounded-lg"
-                  />
+                    playsInline
+                  >
+                    <source src={audioUrl} type={file.type} />
+                  </video>
                 ) : (
                   <audio
                     controls
