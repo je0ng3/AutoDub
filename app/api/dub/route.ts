@@ -7,7 +7,7 @@ import { getDubbedAudio, getDubbingStatus, startDubbing } from "@/lib/elevenlabs
 import { extractAudio, isVideoMime, muxVideoWithAudio } from "@/lib/ffmpeg";
 
 // 인메모리 결과 저장소 (단일 인스턴스 전용 — 프로덕션에서는 오브젝트 스토리지로 교체)
-const results = new Map<string, { buffer: Buffer; mimeType: string; filename: string }>();
+export const results = new Map<string, { buffer: Buffer; mimeType: string; filename: string }>();
 
 function send(controller: ReadableStreamDefaultController, data: object) {
   const encoder = new TextEncoder();
@@ -150,10 +150,44 @@ export async function GET(req: Request) {
   const result = results.get(resultId);
   if (!result) return new Response("Result not found or expired", { status: 404 });
 
+  const total = result.buffer.byteLength;
+  const rangeHeader = req.headers.get("range");
+
+  const baseHeaders = {
+    "Content-Type": result.mimeType,
+    "Content-Disposition": `inline; filename="${result.filename}"`,
+    "Accept-Ranges": "bytes",
+  };
+
+  if (rangeHeader) {
+    const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+    if (!match) return new Response("Invalid Range", { status: 416 });
+
+    const start = parseInt(match[1], 10);
+    const end = match[2] ? parseInt(match[2], 10) : total - 1;
+
+    if (start > end || end >= total) {
+      return new Response("Range Not Satisfiable", {
+        status: 416,
+        headers: { "Content-Range": `bytes */${total}` },
+      });
+    }
+
+    const chunk = result.buffer.subarray(start, end + 1);
+    return new Response(chunk as unknown as BodyInit, {
+      status: 206,
+      headers: {
+        ...baseHeaders,
+        "Content-Range": `bytes ${start}-${end}/${total}`,
+        "Content-Length": String(chunk.byteLength),
+      },
+    });
+  }
+
   return new Response(result.buffer as unknown as BodyInit, {
     headers: {
-      "Content-Type": result.mimeType,
-      "Content-Disposition": `attachment; filename="${result.filename}"`,
+      ...baseHeaders,
+      "Content-Length": String(total),
     },
   });
 }
