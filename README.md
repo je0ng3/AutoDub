@@ -17,8 +17,8 @@
 - **Next.js 16** (App Router) + **React 19** + **TypeScript**
 - **Tailwind CSS v4**
 - **ElevenLabs API** — STT / 번역 / TTS
-- **fluent-ffmpeg + ffmpeg-static** — 서버 사이드 비디오 크롭 및 오디오 먹싱
-- **@ffmpeg/ffmpeg (WASM)** — 클라이언트 사이드 오디오 크롭 (WASM 바이너리는 `public/ffmpeg/`에 로컬 서빙)
+- **fluent-ffmpeg + ffmpeg-static** — 서버 사이드 오디오 추출 및 오디오 먹싱
+- **@ffmpeg/ffmpeg (WASM)** — 클라이언트 사이드 오디오/비디오 크롭 (WASM 바이너리는 `public/ffmpeg/`에 로컬 서빙)
 - **NextAuth.js v5** — Google OAuth 인증
 - **Turso (libSQL)** — 관리자 화이트리스트 / 일반 사용자 / 접근 요청 DB
 - **Vitest** — 단위 테스트

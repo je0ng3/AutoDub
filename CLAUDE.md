@@ -31,15 +31,14 @@ npm run test:coverage # 커버리지 리포트
 - **NextAuth.js v5 (beta)** — Google OAuth 인증
 - **Vitest + Testing Library** — 단위/컴포넌트 테스트
 - **Turso (libSQL)** — 데이터베이스 (회원 화이트리스트 관리)
-- **fluent-ffmpeg + ffmpeg-static** — 서버 사이드 비디오 크롭 및 오디오 먹싱
-- **@ffmpeg/ffmpeg (WASM)** — 클라이언트 사이드 오디오 크롭
+- **fluent-ffmpeg + ffmpeg-static** — 서버 사이드 오디오 추출 및 오디오 먹싱
+- **@ffmpeg/ffmpeg (WASM)** — 클라이언트 사이드 오디오/비디오 크롭
 - **Vercel** — 배포
 
 ## 더빙 파이프라인
 
 0. **구간 크롭** — 사용자가 슬라이더로 시작/끝 지점 선택 (최대 60초)
-   - 오디오: 클라이언트에서 FFmpeg WASM으로 크롭 (`-c copy`, faststart 없음)
-   - 비디오: 서버에서 fluent-ffmpeg으로 크롭 + `-movflags +faststart` (WASM stream copy가 컨테이너를 손상시키므로)
+   - 오디오/비디오 모두 클라이언트에서 FFmpeg WASM으로 크롭 (`-c copy`, stream copy 무손실)
 1. **전사** — 업로드된 파일에서 음성 추출 → ElevenLabs STT API로 텍스트 전사
 2. **번역** — 전사 텍스트를 ElevenLabs API로 타겟 언어 번역
 3. **합성** — 번역 텍스트를 ElevenLabs TTS API로 타겟 언어 음성 생성
