@@ -58,39 +58,60 @@ function getMediaDuration(filePath: string): Promise<number> {
   });
 }
 
-/** 더빙 오디오를 원본 영상에 합성한다. 출력 길이는 원본 영상 길이에 맞춘다. */
+/**
+ * 더빙 오디오를 원본 영상에 합성한다. 출력 길이는 원본 영상 길이에 맞춘다.
+ * - audioBuffer: null이면 원본 영상 오디오를 그대로 유지
+ * - srtPath: 경로를 전달하면 자막을 영상에 소각(하드코딩)한다 (비디오 재인코딩 필요)
+ */
 export async function muxVideoWithAudio(
   videoPath: string,
-  audioBuffer: Buffer,
+  audioBuffer: Buffer | null,
   videoMime: string,
-  outputMime?: string
+  outputMime?: string,
+  srtPath?: string
 ): Promise<Buffer> {
   const targetMime = outputMime ?? videoMime;
   const outputExt = targetMime === "video/quicktime" ? "mov" : targetMime.split("/")[1];
   const id = randomUUID();
-  const audioPath = join(tmpdir(), `${id}-audio.mp3`);
+  const audioPath = audioBuffer ? join(tmpdir(), `${id}-audio.mp3`) : null;
   const outputPath = join(tmpdir(), `${id}-output.${outputExt}`);
 
-  await writeFile(audioPath, audioBuffer);
+  if (audioPath && audioBuffer) {
+    await writeFile(audioPath, audioBuffer);
+  }
 
   const videoDuration = await getMediaDuration(videoPath);
 
   await new Promise<void>((resolve, reject) => {
-    ffmpeg()
-      .input(videoPath)
-      .input(audioPath)
-      .outputOptions([
-        "-c:v copy",
-        "-map 0:v:0",
-        "-map 1:a:0",
-        `-t ${videoDuration}`,
-      ])
+    const cmd = ffmpeg().input(videoPath);
+    if (audioPath) cmd.input(audioPath);
+
+    const outputOptions: string[] = [`-t ${videoDuration}`];
+
+    if (audioPath) {
+      outputOptions.push("-map 0:v:0", "-map 1:a:0");
+    } else {
+      outputOptions.push("-map 0:v:0", "-map 0:a:0", "-c:a copy");
+    }
+
+    if (srtPath) {
+      const escaped = srtPath.replace(/\\/g, "/").replace(/:/g, "\\:");
+      outputOptions.push(`-vf subtitles='${escaped}'`);
+      outputOptions.push("-c:v libx264", "-preset fast", "-crf 22");
+    } else {
+      outputOptions.push("-c:v copy");
+    }
+
+    cmd
+      .outputOptions(outputOptions)
       .save(outputPath)
       .on("end", () => resolve())
       .on("error", (err) => reject(err));
   });
 
   const output = await readFile(outputPath);
-  await Promise.all([audioPath, outputPath].map((p) => unlink(p).catch(() => {})));
+  await Promise.all(
+    [audioPath, outputPath].filter(Boolean).map((p) => unlink(p!).catch(() => {}))
+  );
   return output;
 }

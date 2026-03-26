@@ -41,6 +41,8 @@ export default function Home() {
   const [fileDuration, setFileDuration] = useState<number | null>(null);
   const [cropStart, setCropStart] = useState(0);
   const [cropEnd, setCropEnd] = useState<number | null>(null);
+  const [enableDubbing, setEnableDubbing] = useState(true);
+  const [enableCaption, setEnableCaption] = useState(false);
   const [showLoginPopup, setShowLoginPopup] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -138,6 +140,8 @@ export default function Home() {
         "x-blob-url": blobUrl,
         "x-original-file-type": file.type,
         "x-original-file-name": encodeURIComponent(file.name),
+        "x-enable-dubbing": String(enableDubbing),
+        "x-enable-caption": String(enableCaption),
       },
     });
     if (!res.ok || !res.body) {
@@ -200,6 +204,8 @@ export default function Home() {
     setFileDuration(null);
     setCropStart(0);
     setCropEnd(null);
+    setEnableDubbing(true);
+    setEnableCaption(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -434,6 +440,47 @@ export default function Home() {
           </div>
         )}
 
+        {/* Options */}
+        {(pageStep === "ready" || pageStep === "cropping" || pageStep === "processing") && file?.type.startsWith("video/") && (
+          <div className="mb-6 rounded-2xl border border-zinc-200 p-5">
+            <label className="block text-xs font-medium text-zinc-500 mb-3 uppercase tracking-widest">
+              처리 옵션
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { label: "더빙", description: "음성 교체", checked: enableDubbing, onChange: setEnableDubbing },
+                { label: "자막", description: "자막 삽입", checked: enableCaption, onChange: setEnableCaption },
+              ].map(({ label, description, checked, onChange }) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => pageStep === "ready" && onChange(!checked)}
+                  disabled={pageStep !== "ready"}
+                  className={[
+                    "flex items-center justify-between px-4 py-3 rounded-xl border transition-all duration-100",
+                    checked ? "border-zinc-900 bg-zinc-50" : "border-zinc-200 bg-white",
+                    pageStep !== "ready" ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:border-zinc-400",
+                  ].join(" ")}
+                >
+                  <div className="text-left">
+                    <p className={["text-sm font-medium", checked ? "text-zinc-900" : "text-zinc-500"].join(" ")}>{label}</p>
+                    <p className="text-xs text-zinc-400 mt-0.5">{description}</p>
+                  </div>
+                  <div className={[
+                    "w-9 h-5 rounded-full transition-colors flex-shrink-0 ml-3",
+                    checked ? "bg-zinc-900" : "bg-zinc-200",
+                  ].join(" ")}>
+                    <div className={[
+                      "w-4 h-4 rounded-full bg-white shadow-sm mt-0.5 transition-transform",
+                      checked ? "translate-x-4" : "translate-x-0.5",
+                    ].join(" ")} />
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Language Selector + CTA */}
         {(pageStep === "ready" || pageStep === "cropping" || pageStep === "processing") && (
           <div className="space-y-4 mb-8">
@@ -465,10 +512,10 @@ export default function Home() {
 
             <button
               onClick={handleStart}
-              disabled={pageStep !== "ready"}
+              disabled={pageStep !== "ready" || (!enableDubbing && !enableCaption)}
               className={[
                 "w-full py-4 rounded-2xl text-sm font-semibold transition-all duration-150",
-                pageStep !== "ready"
+                pageStep !== "ready" || (!enableDubbing && !enableCaption)
                   ? "bg-zinc-200 text-zinc-400 cursor-not-allowed"
                   : "bg-zinc-900 text-white hover:bg-zinc-700 active:scale-[0.99]",
               ].join(" ")}

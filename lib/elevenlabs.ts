@@ -41,3 +41,12 @@ export async function getDubbedAudio(
   }
   return Buffer.concat(chunks);
 }
+
+export async function getDubbingTranscript(
+  dubbingId: string,
+  targetLang: string
+): Promise<string> {
+  return (await elevenlabs.dubbing.getTranscriptForDub(dubbingId, targetLang, {
+    format_type: "srt",
+  })) as string;
+}
