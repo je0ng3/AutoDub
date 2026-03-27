@@ -46,9 +46,18 @@ export default function Home() {
   const [showLoginPopup, setShowLoginPopup] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
+  const [previewCurrentTime, setPreviewCurrentTime] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoPreviewRef = useRef<HTMLVideoElement>(null);
   const audioPreviewRef = useRef<HTMLAudioElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+
+  function getTimeFromPointer(clientX: number): number {
+    const track = trackRef.current;
+    if (!track || fileDuration === null) return 0;
+    const rect = track.getBoundingClientRect();
+    return Math.max(0, Math.min(fileDuration, ((clientX - rect.left) / rect.width) * fileDuration));
+  }
 
   function requireAuth(): boolean {
     if (!session) {
@@ -202,6 +211,7 @@ export default function Home() {
   function handleReset() {
     setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
     setIsPreviewPlaying(false);
+    setPreviewCurrentTime(0);
     setFile(null);
     setPageStep("idle");
     setActiveStep(null);
@@ -222,26 +232,35 @@ export default function Home() {
       : audioPreviewRef.current;
   }
 
-  function handlePreviewPlay() {
+  function handlePreviewToggle() {
     const media = getPreviewMedia();
     if (!media || cropEnd === null) return;
-    media.currentTime = cropStart;
-    media.play();
-    setIsPreviewPlaying(true);
+    if (isPreviewPlaying) {
+      media.pause();
+      setIsPreviewPlaying(false);
+    } else {
+      if (media.currentTime < cropStart || media.currentTime >= cropEnd) {
+        media.currentTime = cropStart;
+        setPreviewCurrentTime(cropStart);
+      }
+      media.play();
+      setIsPreviewPlaying(true);
+    }
   }
 
   useEffect(() => {
     const media = getPreviewMedia();
     if (!media || cropEnd === null) return;
     const end = cropEnd;
-    function check() {
+    function onTimeUpdate() {
+      setPreviewCurrentTime(media!.currentTime);
       if (media!.currentTime >= end) {
         media!.pause();
         setIsPreviewPlaying(false);
       }
     }
-    media.addEventListener("timeupdate", check);
-    return () => media.removeEventListener("timeupdate", check);
+    media.addEventListener("timeupdate", onTimeUpdate);
+    return () => media.removeEventListener("timeupdate", onTimeUpdate);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cropEnd, file]);
 
@@ -421,102 +440,134 @@ export default function Home() {
             {/* Inline preview player */}
             <div className="mb-4">
               {file?.type.startsWith("video/") ? (
-                <video
-                  ref={videoPreviewRef}
-                  src={previewUrl ?? undefined}
-                  className="w-full rounded-xl bg-zinc-100"
-                  playsInline
-                  onEnded={() => setIsPreviewPlaying(false)}
-                />
+                <div className="relative cursor-pointer group" onClick={handlePreviewToggle}>
+                  <video
+                    ref={videoPreviewRef}
+                    src={previewUrl ?? undefined}
+                    className="w-full rounded-xl bg-zinc-100"
+                    playsInline
+                    onEnded={() => setIsPreviewPlaying(false)}
+                  />
+                  <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                    <div className="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center shadow-md">
+                      {isPreviewPlaying ? (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="#18181b">
+                          <rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" />
+                        </svg>
+                      ) : (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="#18181b" style={{marginLeft: "2px"}}>
+                          <polygon points="5,3 19,12 5,21" />
+                        </svg>
+                      )}
+                    </div>
+                  </div>
+                </div>
               ) : (
-                <audio
-                  ref={audioPreviewRef}
-                  src={previewUrl ?? undefined}
-                  className="w-full"
-                  onEnded={() => setIsPreviewPlaying(false)}
-                />
+                <button
+                  type="button"
+                  onClick={handlePreviewToggle}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-zinc-50 hover:bg-zinc-100 transition-colors"
+                >
+                  <div className="w-8 h-8 rounded-full bg-zinc-900 flex items-center justify-center flex-shrink-0">
+                    {isPreviewPlaying ? (
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="white">
+                        <rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" />
+                      </svg>
+                    ) : (
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="white" style={{marginLeft: "1px"}}>
+                        <polygon points="5,3 19,12 5,21" />
+                      </svg>
+                    )}
+                  </div>
+                  <div className="text-left">
+                    <p className="text-xs font-medium text-zinc-700">{isPreviewPlaying ? "재생 중..." : "구간 미리 듣기"}</p>
+                    <p className="text-xs text-zinc-400 font-mono">{formatTime(cropStart)} – {formatTime(cropEnd)}</p>
+                  </div>
+                  <audio
+                    ref={audioPreviewRef}
+                    src={previewUrl ?? undefined}
+                    onEnded={() => setIsPreviewPlaying(false)}
+                    className="hidden"
+                  />
+                </button>
               )}
             </div>
 
-            <div className="flex items-center justify-between mb-4">
-              <label className="text-xs font-medium text-zinc-500 uppercase tracking-widest">
+            {/* Single-row timeline */}
+            <div className="flex items-center gap-3">
+              <label className="text-xs font-medium text-zinc-500 uppercase tracking-widest whitespace-nowrap">
                 구간 선택
               </label>
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-mono text-zinc-700">
-                  {formatTime(cropStart)} – {formatTime(cropEnd)}
-                  <span className="text-zinc-400 ml-1">({formatTime(cropEnd - cropStart)})</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={handlePreviewPlay}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-700 transition-colors"
-                >
-                  {isPreviewPlaying ? (
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-                      <rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" />
-                    </svg>
-                  ) : (
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-                      <polygon points="5,3 19,12 5,21" />
-                    </svg>
-                  )}
-                  구간 재생
-                </button>
-              </div>
-            </div>
 
-            <div className="space-y-4">
-              <div>
-                <div className="flex justify-between text-xs text-zinc-400 mb-1.5">
-                  <span>시작</span>
-                  <span className="font-mono text-zinc-600">{formatTime(cropStart)}</span>
+              {/* Timeline track */}
+              <div
+                ref={trackRef}
+                className="relative flex-1 h-8 flex items-center select-none cursor-pointer"
+                onPointerDown={(e) => {
+                  const t = getTimeFromPointer(e.clientX);
+                  const media = getPreviewMedia();
+                  if (media) { media.pause(); media.currentTime = t; setIsPreviewPlaying(false); }
+                  setPreviewCurrentTime(t);
+                }}
+              >
+                {/* Track background */}
+                <div className="absolute w-full h-1.5 rounded-full bg-zinc-200 overflow-hidden pointer-events-none">
+                  <div className="absolute h-full bg-zinc-300" style={{ left: `${(cropStart / fileDuration) * 100}%`, width: `${((cropEnd - cropStart) / fileDuration) * 100}%` }} />
+                  <div className="absolute h-full bg-zinc-700" style={{ left: `${(cropStart / fileDuration) * 100}%`, width: `${(Math.max(0, Math.min(previewCurrentTime, cropEnd) - cropStart) / fileDuration) * 100}%` }} />
                 </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={Math.floor(fileDuration)}
-                  step={1}
-                  value={cropStart}
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setCropStart(val);
-                    if (val >= cropEnd) setCropEnd(Math.min(val + 1, Math.floor(fileDuration)));
-                    else if (cropEnd - val > MAX_CROP_DURATION) setCropEnd(val + MAX_CROP_DURATION);
+
+                {/* Crop start handle */}
+                <div
+                  className="absolute top-1/2 w-1 h-5 bg-zinc-900 rounded-full cursor-ew-resize z-10 touch-none"
+                  style={{ left: `${(cropStart / fileDuration) * 100}%`, transform: "translate(-50%, -50%)" }}
+                  onPointerDown={(e) => { e.stopPropagation(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); }}
+                  onPointerMove={(e) => {
+                    if (!(e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) return;
+                    const t = getTimeFromPointer(e.clientX);
+                    const clamped = Math.max(0, Math.min(t, cropEnd - 1));
+                    setCropStart(clamped);
+                    if (cropEnd - clamped > MAX_CROP_DURATION) setCropEnd(clamped + MAX_CROP_DURATION);
                     const media = getPreviewMedia();
-                    if (media) { media.pause(); media.currentTime = val; setIsPreviewPlaying(false); }
+                    if (media) { media.pause(); media.currentTime = clamped; setIsPreviewPlaying(false); }
+                    setPreviewCurrentTime(clamped);
                   }}
-                  className="w-full accent-zinc-900"
+                />
+
+                {/* Crop end handle */}
+                <div
+                  className="absolute top-1/2 w-1 h-5 bg-zinc-900 rounded-full cursor-ew-resize z-10 touch-none"
+                  style={{ left: `${(cropEnd / fileDuration) * 100}%`, transform: "translate(-50%, -50%)" }}
+                  onPointerDown={(e) => { e.stopPropagation(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); }}
+                  onPointerMove={(e) => {
+                    if (!(e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) return;
+                    const t = getTimeFromPointer(e.clientX);
+                    const clamped = Math.min(fileDuration, Math.max(t, cropStart + 1));
+                    setCropEnd(clamped);
+                    if (clamped - cropStart > MAX_CROP_DURATION) setCropStart(clamped - MAX_CROP_DURATION);
+                    const media = getPreviewMedia();
+                    if (media) { media.pause(); media.currentTime = Math.max(0, clamped - 1); setIsPreviewPlaying(false); }
+                    setPreviewCurrentTime(Math.max(0, clamped - 1));
+                  }}
+                />
+
+                {/* Playhead */}
+                <div
+                  className="absolute top-1/2 w-3 h-3 bg-white border-2 border-zinc-900 rounded-full shadow-sm cursor-grab z-20 touch-none"
+                  style={{ left: `${(previewCurrentTime / fileDuration) * 100}%`, transform: "translate(-50%, -50%)" }}
+                  onPointerDown={(e) => { e.stopPropagation(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); }}
+                  onPointerMove={(e) => {
+                    if (!(e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) return;
+                    const t = getTimeFromPointer(e.clientX);
+                    setPreviewCurrentTime(t);
+                    const media = getPreviewMedia();
+                    if (media) { media.pause(); media.currentTime = t; setIsPreviewPlaying(false); }
+                  }}
                 />
               </div>
 
-              <div>
-                <div className="flex justify-between text-xs text-zinc-400 mb-1.5">
-                  <span>끝</span>
-                  <span className="font-mono text-zinc-600">{formatTime(cropEnd)}</span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={Math.floor(fileDuration)}
-                  step={1}
-                  value={cropEnd}
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setCropEnd(val);
-                    if (val <= cropStart) setCropStart(Math.max(val - 1, 0));
-                    else if (val - cropStart > MAX_CROP_DURATION) setCropStart(val - MAX_CROP_DURATION);
-                    const media = getPreviewMedia();
-                    if (media) { media.pause(); media.currentTime = Math.max(0, val - 1); setIsPreviewPlaying(false); }
-                  }}
-                  className="w-full accent-zinc-900"
-                />
-              </div>
-            </div>
-
-            <div className="flex justify-between mt-3 text-xs text-zinc-400">
-              <span>0:00</span>
-              <span>{formatTime(Math.floor(fileDuration))}</span>
+              <span className="text-xs font-mono text-zinc-500 whitespace-nowrap">
+                {formatTime(previewCurrentTime)}
+              </span>
             </div>
           </div>
         )}
