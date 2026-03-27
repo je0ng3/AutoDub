@@ -37,8 +37,9 @@ npm run test:coverage # 커버리지 리포트
 
 ## 더빙 파이프라인
 
-0. **구간 크롭** — 사용자가 슬라이더로 시작/끝 지점 선택 (최대 60초)
+0. **구간 크롭** — 단일 타임라인 트랙에서 크롭 핸들(세로 바)로 시작/끝 조정, 플레이헤드(원형)로 미리보기 seek (최대 60초)
    - 오디오/비디오 모두 클라이언트에서 FFmpeg WASM으로 크롭 (`-c copy`, stream copy 무손실)
+   - 비디오: 더빙(음성 교체) / 자막(SRT 소각, libx264 재인코딩) 옵션 개별 선택 가능
 1. **전사** — 업로드된 파일에서 음성 추출 → ElevenLabs STT API로 텍스트 전사
 2. **번역** — 전사 텍스트를 ElevenLabs API로 타겟 언어 번역
 3. **합성** — 번역 텍스트를 ElevenLabs TTS API로 타겟 언어 음성 생성
@@ -57,7 +58,7 @@ npm run test:coverage # 커버리지 리포트
 
 - `app/layout.tsx` — 루트 레이아웃; Geist Sans + Geist Mono 폰트 및 전역 CSS 설정
 - `app/providers.tsx` — 클라이언트 사이드 `SessionProvider` 래퍼 (useSession 컨텍스트 제공)
-- `app/page.tsx` — 홈 페이지; 파일 업로드, 구간 슬라이더, 더빙 진행 상태 UI; 미인증 사용자 로그인 팝업
+- `app/page.tsx` — 홈 페이지; 파일 업로드(선택 후 컴팩트 바), 단일 타임라인 크롭 UI(핸들+플레이헤드), 인라인 미리보기 플레이어, 더빙/자막 옵션 토글, 더빙 진행 상태 UI; 미인증 사용자 로그인 팝업
 - `app/globals.css` — 전역 스타일; CSS 커스텀 속성 및 Tailwind 테마 토큰
 - `app/api/dub/route.ts` — 더빙 파이프라인 API 라우트 (raw body + 헤더 방식)
 - `app/api/auth/` — NextAuth.js 핸들러
