@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { signOut, useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { upload } from "@vercel/blob/client";
@@ -44,7 +44,11 @@ export default function Home() {
   const [enableDubbing, setEnableDubbing] = useState(true);
   const [enableCaption, setEnableCaption] = useState(false);
   const [showLoginPopup, setShowLoginPopup] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoPreviewRef = useRef<HTMLVideoElement>(null);
+  const audioPreviewRef = useRef<HTMLAudioElement>(null);
 
   function requireAuth(): boolean {
     if (!session) {
@@ -56,12 +60,14 @@ export default function Home() {
 
   function handleFile(f: File) {
     if (!requireAuth()) return;
+    setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
     setFile(f);
     setCropStart(0);
     setCropEnd(null);
     setFileDuration(null);
 
     const url = URL.createObjectURL(f);
+    setPreviewUrl(url);
     const media = f.type.startsWith("video/")
       ? document.createElement("video")
       : document.createElement("audio");
@@ -69,7 +75,6 @@ export default function Home() {
     media.onloadedmetadata = () => {
       setFileDuration(media.duration);
       setCropEnd(Math.min(media.duration, MAX_CROP_DURATION));
-      URL.revokeObjectURL(url);
     };
 
     setPageStep("ready");
@@ -195,6 +200,8 @@ export default function Home() {
   }
 
   function handleReset() {
+    setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
+    setIsPreviewPlaying(false);
     setFile(null);
     setPageStep("idle");
     setActiveStep(null);
@@ -208,6 +215,35 @@ export default function Home() {
     setEnableCaption(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
+
+  function getPreviewMedia(): HTMLMediaElement | null {
+    return file?.type.startsWith("video/")
+      ? videoPreviewRef.current
+      : audioPreviewRef.current;
+  }
+
+  function handlePreviewPlay() {
+    const media = getPreviewMedia();
+    if (!media || cropEnd === null) return;
+    media.currentTime = cropStart;
+    media.play();
+    setIsPreviewPlaying(true);
+  }
+
+  useEffect(() => {
+    const media = getPreviewMedia();
+    if (!media || cropEnd === null) return;
+    const end = cropEnd;
+    function check() {
+      if (media!.currentTime >= end) {
+        media!.pause();
+        setIsPreviewPlaying(false);
+      }
+    }
+    media.addEventListener("timeupdate", check);
+    return () => media.removeEventListener("timeupdate", check);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cropEnd, file]);
 
   const audioUrl = resultId ? `/api/dub?resultId=${resultId}` : null;
 
@@ -297,7 +333,10 @@ export default function Home() {
               onDragLeave={() => setIsDragging(false)}
               onDrop={handleDrop}
               className={[
-                "flex flex-col items-center justify-center gap-3 w-full rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-150 py-14 px-8 text-center",
+                "flex w-full rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-150",
+                file
+                  ? "flex-row items-center gap-3 px-4 py-3"
+                  : "flex-col items-center justify-center gap-3 py-14 px-8 text-center",
                 isDragging
                   ? "border-zinc-400 bg-zinc-50"
                   : file
@@ -307,10 +346,10 @@ export default function Home() {
             >
               {file ? (
                 <>
-                  <div className="w-10 h-10 rounded-xl bg-zinc-900 flex items-center justify-center">
+                  <div className="w-7 h-7 rounded-lg bg-zinc-900 flex items-center justify-center flex-shrink-0">
                     <svg
-                      width="18"
-                      height="18"
+                      width="14"
+                      height="14"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="white"
@@ -323,11 +362,11 @@ export default function Home() {
                       <circle cx="18" cy="16" r="3" />
                     </svg>
                   </div>
-                  <div>
-                    <p className="text-sm font-medium text-zinc-900">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-zinc-900 truncate">
                       {file.name}
                     </p>
-                    <p className="text-xs text-zinc-400 mt-1">
+                    <p className="text-xs text-zinc-400">
                       {(file.size / 1024 / 1024).toFixed(1)} MB
                     </p>
                   </div>
@@ -338,7 +377,7 @@ export default function Home() {
                         e.preventDefault();
                         handleReset();
                       }}
-                      className="text-xs text-zinc-400 hover:text-zinc-600 underline underline-offset-2 transition-colors"
+                      className="text-xs text-zinc-400 hover:text-zinc-600 underline underline-offset-2 transition-colors flex-shrink-0"
                     >
                       다시 선택
                     </button>
@@ -379,14 +418,52 @@ export default function Home() {
         {/* Crop Selector */}
         {pageStep === "ready" && fileDuration !== null && cropEnd !== null && (
           <div className="mb-6 rounded-2xl border border-zinc-200 p-5">
+            {/* Inline preview player */}
+            <div className="mb-4">
+              {file?.type.startsWith("video/") ? (
+                <video
+                  ref={videoPreviewRef}
+                  src={previewUrl ?? undefined}
+                  className="w-full rounded-xl bg-zinc-100"
+                  playsInline
+                  onEnded={() => setIsPreviewPlaying(false)}
+                />
+              ) : (
+                <audio
+                  ref={audioPreviewRef}
+                  src={previewUrl ?? undefined}
+                  className="w-full"
+                  onEnded={() => setIsPreviewPlaying(false)}
+                />
+              )}
+            </div>
+
             <div className="flex items-center justify-between mb-4">
               <label className="text-xs font-medium text-zinc-500 uppercase tracking-widest">
                 구간 선택
               </label>
-              <span className="text-xs font-mono text-zinc-700">
-                {formatTime(cropStart)} – {formatTime(cropEnd)}
-                <span className="text-zinc-400 ml-1">({formatTime(cropEnd - cropStart)})</span>
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-mono text-zinc-700">
+                  {formatTime(cropStart)} – {formatTime(cropEnd)}
+                  <span className="text-zinc-400 ml-1">({formatTime(cropEnd - cropStart)})</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={handlePreviewPlay}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-700 transition-colors"
+                >
+                  {isPreviewPlaying ? (
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                      <rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" />
+                    </svg>
+                  ) : (
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                      <polygon points="5,3 19,12 5,21" />
+                    </svg>
+                  )}
+                  구간 재생
+                </button>
+              </div>
             </div>
 
             <div className="space-y-4">
@@ -406,6 +483,8 @@ export default function Home() {
                     setCropStart(val);
                     if (val >= cropEnd) setCropEnd(Math.min(val + 1, Math.floor(fileDuration)));
                     else if (cropEnd - val > MAX_CROP_DURATION) setCropEnd(val + MAX_CROP_DURATION);
+                    const media = getPreviewMedia();
+                    if (media) { media.pause(); media.currentTime = val; setIsPreviewPlaying(false); }
                   }}
                   className="w-full accent-zinc-900"
                 />
@@ -427,6 +506,8 @@ export default function Home() {
                     setCropEnd(val);
                     if (val <= cropStart) setCropStart(Math.max(val - 1, 0));
                     else if (val - cropStart > MAX_CROP_DURATION) setCropStart(val - MAX_CROP_DURATION);
+                    const media = getPreviewMedia();
+                    if (media) { media.pause(); media.currentTime = Math.max(0, val - 1); setIsPreviewPlaying(false); }
                   }}
                   className="w-full accent-zinc-900"
                 />
