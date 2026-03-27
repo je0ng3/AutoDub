@@ -203,4 +203,48 @@ describe("muxVideoWithAudio", () => {
       await unlink(videoPath).catch(() => {});
     }
   }, 60_000);
+
+  it("audioBuffer가 null이면 원본 영상 오디오를 유지한다", async () => {
+    const videoPath = await writeToTmp(await makeTestVideo(5, "mp4"), "mp4");
+    try {
+      const result = await muxVideoWithAudio(videoPath, null, "video/mp4");
+      expect(result.byteLength).toBeGreaterThan(1000);
+      expect(await getDuration(result, "mp4")).toBeCloseTo(5, 0);
+      expect(await hasAudioStream(result, "mp4")).toBe(true);
+    } finally {
+      await unlink(videoPath).catch(() => {});
+    }
+  }, 60_000);
+
+  it("srtPath를 전달하면 자막이 소각된 유효한 영상을 반환한다", async () => {
+    const videoPath = await writeToTmp(await makeTestVideo(5, "mp4"), "mp4");
+    const srtContent = "1\n00:00:00,000 --> 00:00:03,000\nTest Subtitle\n\n";
+    const srtPath = join(tmpdir(), `${randomUUID()}.srt`);
+    await writeFile(srtPath, srtContent);
+    try {
+      const result = await muxVideoWithAudio(videoPath, await makeTestAudio(5), "video/mp4", undefined, srtPath);
+      expect(result.byteLength).toBeGreaterThan(1000);
+      expect(await getDuration(result, "mp4")).toBeCloseTo(5, 0);
+      expect(await hasAudioStream(result, "mp4")).toBe(true);
+    } finally {
+      await unlink(videoPath).catch(() => {});
+      await unlink(srtPath).catch(() => {});
+    }
+  }, 60_000);
+
+  it("audioBuffer null + srtPath 조합으로 원본 오디오 유지하며 자막을 소각한다", async () => {
+    const videoPath = await writeToTmp(await makeTestVideo(5, "mp4"), "mp4");
+    const srtContent = "1\n00:00:00,000 --> 00:00:03,000\nCaption Only\n\n";
+    const srtPath = join(tmpdir(), `${randomUUID()}.srt`);
+    await writeFile(srtPath, srtContent);
+    try {
+      const result = await muxVideoWithAudio(videoPath, null, "video/mp4", undefined, srtPath);
+      expect(result.byteLength).toBeGreaterThan(1000);
+      expect(await getDuration(result, "mp4")).toBeCloseTo(5, 0);
+      expect(await hasAudioStream(result, "mp4")).toBe(true);
+    } finally {
+      await unlink(videoPath).catch(() => {});
+      await unlink(srtPath).catch(() => {});
+    }
+  }, 60_000);
 });

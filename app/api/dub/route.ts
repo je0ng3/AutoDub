@@ -3,8 +3,8 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { writeFile, readFile, unlink } from "fs/promises";
 import { del } from "@vercel/blob";
-import { getDubbedAudio, getDubbingStatus, startDubbing } from "@/lib/elevenlabs";
-import { extractAudio, isVideoMime, muxVideoWithAudio } from "@/lib/ffmpeg";
+import { getDubbedAudio, getDubbingStatus, getDubbingTranscript, startDubbing } from "@/lib/elevenlabs";
+import { isVideoMime, muxVideoWithAudio } from "@/lib/ffmpeg";
 
 // 인메모리 결과 저장소 (단일 인스턴스 전용 — 프로덕션에서는 오브젝트 스토리지로 교체)
 export const results = new Map<string, { buffer: Buffer; mimeType: string; filename: string }>();
@@ -21,6 +21,8 @@ export async function POST(req: Request) {
   const blobUrl = req.headers.get("x-blob-url");
   const originalFileType = req.headers.get("x-original-file-type") ?? fileType;
   const originalFileName = decodeURIComponent(req.headers.get("x-original-file-name") ?? fileName);
+  const enableDubbing = req.headers.get("x-enable-dubbing") !== "false";
+  const enableCaption = req.headers.get("x-enable-caption") === "true";
   if (!targetLang) {
     return new Response("Missing targetLang", { status: 400 });
   }
@@ -32,6 +34,7 @@ export async function POST(req: Request) {
     async start(controller) {
       let videoTmpPath: string | null = null;
       let audioTmpPath: string | null = null;
+      let srtTmpPath: string | null = null;
       try {
         // blob fetch를 stream 내부에서 수행해 arrayBuffer를 디스크 기록 후 GC 허용
         const blobRes = await fetch(blobUrl);
@@ -45,25 +48,21 @@ export async function POST(req: Request) {
         const isVideo = isVideoMime(fileType);
 
         if (isVideo) {
-          // 비디오: 디스크에 한 번만 기록 → extractAudio · muxVideoWithAudio가 경로 공유
+          // 비디오: 영상 파일 그대로 ElevenLabs에 전달 → 타임라인 기준 싱크
           const ext = fileType === "video/quicktime" ? "mov" : fileType.split("/")[1];
           videoTmpPath = join(tmpdir(), `${randomUUID()}-video.${ext}`);
           await writeFile(videoTmpPath, Buffer.from(arrayBuffer));
           arrayBuffer = null; // 더빙 대기 중 GC 허용
-
-          audioTmpPath = join(tmpdir(), `${randomUUID()}-dubbing-audio.mp3`);
-          await writeFile(audioTmpPath, await extractAudio(videoTmpPath));
         } else {
-          // 오디오: File 생성자 복사 없이 디스크 기록 후 ReadStream 전달
           const ext = fileType.split("/")[1] ?? "bin";
           audioTmpPath = join(tmpdir(), `${randomUUID()}-audio.${ext}`);
           await writeFile(audioTmpPath, Buffer.from(arrayBuffer));
           arrayBuffer = null;
         }
 
-        const audioMime = isVideo ? "audio/mpeg" : fileType;
-        const audioBlob = new Blob([await readFile(audioTmpPath!)], { type: audioMime });
-        const dubbingId = await startDubbing(audioBlob, targetLang);
+        const dubbingFilePath = isVideo ? videoTmpPath! : audioTmpPath!;
+        const dubbingBlob = new Blob([await readFile(dubbingFilePath)], { type: fileType });
+        const dubbingId = await startDubbing(dubbingBlob, targetLang);
 
         // 2-3단계: 완료될 때까지 폴링하면서 UI 단계 진행
         let pollCount = 0;
@@ -84,22 +83,29 @@ export async function POST(req: Request) {
         if (pollCount < 1) send(controller, { step: "translating" });
         if (pollCount < 3) send(controller, { step: "synthesizing" });
 
-        // 결과 오디오 가져오기
-        const audioBuffer = await getDubbedAudio(dubbingId, targetLang);
+        // 결과 오디오 가져오기 (더빙 옵션이 꺼진 경우 null → 원본 영상 오디오 유지)
+        const audioBuffer = enableDubbing ? await getDubbedAudio(dubbingId, targetLang) : null;
+
+        // 자막 SRT 생성 (비디오 + 자막 옵션 켜진 경우)
+        if (enableCaption && isVideo) {
+          const srt = await getDubbingTranscript(dubbingId, targetLang);
+          srtTmpPath = join(tmpdir(), `${randomUUID()}-sub.srt`);
+          await writeFile(srtTmpPath, srt);
+        }
 
         let buffer: Buffer;
         let mimeType: string;
         let filename: string;
 
         if (isVideo && videoTmpPath) {
-          buffer = await muxVideoWithAudio(videoTmpPath, audioBuffer, fileType, originalFileType);
+          buffer = await muxVideoWithAudio(videoTmpPath, audioBuffer, fileType, originalFileType, srtTmpPath ?? undefined);
           mimeType = originalFileType;
           const origExt = originalFileName.includes(".")
             ? originalFileName.split(".").pop()
             : originalFileType === "video/quicktime" ? "mov" : originalFileType.split("/")[1];
           filename = `dubbed.${origExt}`;
         } else {
-          buffer = audioBuffer;
+          buffer = audioBuffer ?? Buffer.alloc(0);
           mimeType = "audio/mpeg";
           filename = "dubbed.mp3";
         }
@@ -126,6 +132,7 @@ export async function POST(req: Request) {
         await Promise.all([
           videoTmpPath ? unlink(videoTmpPath).catch(() => {}) : Promise.resolve(),
           audioTmpPath ? unlink(audioTmpPath).catch(() => {}) : Promise.resolve(),
+          srtTmpPath ? unlink(srtTmpPath).catch(() => {}) : Promise.resolve(),
         ]);
         controller.close();
       }

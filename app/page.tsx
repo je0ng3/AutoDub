@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { signOut, useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { upload } from "@vercel/blob/client";
@@ -41,8 +41,23 @@ export default function Home() {
   const [fileDuration, setFileDuration] = useState<number | null>(null);
   const [cropStart, setCropStart] = useState(0);
   const [cropEnd, setCropEnd] = useState<number | null>(null);
+  const [enableDubbing, setEnableDubbing] = useState(true);
+  const [enableCaption, setEnableCaption] = useState(false);
   const [showLoginPopup, setShowLoginPopup] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
+  const [previewCurrentTime, setPreviewCurrentTime] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoPreviewRef = useRef<HTMLVideoElement>(null);
+  const audioPreviewRef = useRef<HTMLAudioElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+
+  function getTimeFromPointer(clientX: number): number {
+    const track = trackRef.current;
+    if (!track || fileDuration === null) return 0;
+    const rect = track.getBoundingClientRect();
+    return Math.max(0, Math.min(fileDuration, ((clientX - rect.left) / rect.width) * fileDuration));
+  }
 
   function requireAuth(): boolean {
     if (!session) {
@@ -54,12 +69,14 @@ export default function Home() {
 
   function handleFile(f: File) {
     if (!requireAuth()) return;
+    setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
     setFile(f);
     setCropStart(0);
     setCropEnd(null);
     setFileDuration(null);
 
     const url = URL.createObjectURL(f);
+    setPreviewUrl(url);
     const media = f.type.startsWith("video/")
       ? document.createElement("video")
       : document.createElement("audio");
@@ -67,7 +84,6 @@ export default function Home() {
     media.onloadedmetadata = () => {
       setFileDuration(media.duration);
       setCropEnd(Math.min(media.duration, MAX_CROP_DURATION));
-      URL.revokeObjectURL(url);
     };
 
     setPageStep("ready");
@@ -138,6 +154,8 @@ export default function Home() {
         "x-blob-url": blobUrl,
         "x-original-file-type": file.type,
         "x-original-file-name": encodeURIComponent(file.name),
+        "x-enable-dubbing": String(enableDubbing),
+        "x-enable-caption": String(enableCaption),
       },
     });
     if (!res.ok || !res.body) {
@@ -191,6 +209,9 @@ export default function Home() {
   }
 
   function handleReset() {
+    setPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
+    setIsPreviewPlaying(false);
+    setPreviewCurrentTime(0);
     setFile(null);
     setPageStep("idle");
     setActiveStep(null);
@@ -200,8 +221,48 @@ export default function Home() {
     setFileDuration(null);
     setCropStart(0);
     setCropEnd(null);
+    setEnableDubbing(true);
+    setEnableCaption(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
+
+  function getPreviewMedia(): HTMLMediaElement | null {
+    return file?.type.startsWith("video/")
+      ? videoPreviewRef.current
+      : audioPreviewRef.current;
+  }
+
+  function handlePreviewToggle() {
+    const media = getPreviewMedia();
+    if (!media || cropEnd === null) return;
+    if (isPreviewPlaying) {
+      media.pause();
+      setIsPreviewPlaying(false);
+    } else {
+      if (media.currentTime < cropStart || media.currentTime >= cropEnd) {
+        media.currentTime = cropStart;
+        setPreviewCurrentTime(cropStart);
+      }
+      media.play();
+      setIsPreviewPlaying(true);
+    }
+  }
+
+  useEffect(() => {
+    const media = getPreviewMedia();
+    if (!media || cropEnd === null) return;
+    const end = cropEnd;
+    function onTimeUpdate() {
+      setPreviewCurrentTime(media!.currentTime);
+      if (media!.currentTime >= end) {
+        media!.pause();
+        setIsPreviewPlaying(false);
+      }
+    }
+    media.addEventListener("timeupdate", onTimeUpdate);
+    return () => media.removeEventListener("timeupdate", onTimeUpdate);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cropEnd, file]);
 
   const audioUrl = resultId ? `/api/dub?resultId=${resultId}` : null;
 
@@ -291,7 +352,10 @@ export default function Home() {
               onDragLeave={() => setIsDragging(false)}
               onDrop={handleDrop}
               className={[
-                "flex flex-col items-center justify-center gap-3 w-full rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-150 py-14 px-8 text-center",
+                "flex w-full rounded-2xl border-2 border-dashed cursor-pointer transition-all duration-150",
+                file
+                  ? "flex-row items-center gap-3 px-4 py-3"
+                  : "flex-col items-center justify-center gap-3 py-14 px-8 text-center",
                 isDragging
                   ? "border-zinc-400 bg-zinc-50"
                   : file
@@ -301,10 +365,10 @@ export default function Home() {
             >
               {file ? (
                 <>
-                  <div className="w-10 h-10 rounded-xl bg-zinc-900 flex items-center justify-center">
+                  <div className="w-7 h-7 rounded-lg bg-zinc-900 flex items-center justify-center flex-shrink-0">
                     <svg
-                      width="18"
-                      height="18"
+                      width="14"
+                      height="14"
                       viewBox="0 0 24 24"
                       fill="none"
                       stroke="white"
@@ -317,11 +381,11 @@ export default function Home() {
                       <circle cx="18" cy="16" r="3" />
                     </svg>
                   </div>
-                  <div>
-                    <p className="text-sm font-medium text-zinc-900">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-zinc-900 truncate">
                       {file.name}
                     </p>
-                    <p className="text-xs text-zinc-400 mt-1">
+                    <p className="text-xs text-zinc-400">
                       {(file.size / 1024 / 1024).toFixed(1)} MB
                     </p>
                   </div>
@@ -332,7 +396,7 @@ export default function Home() {
                         e.preventDefault();
                         handleReset();
                       }}
-                      className="text-xs text-zinc-400 hover:text-zinc-600 underline underline-offset-2 transition-colors"
+                      className="text-xs text-zinc-400 hover:text-zinc-600 underline underline-offset-2 transition-colors flex-shrink-0"
                     >
                       다시 선택
                     </button>
@@ -373,63 +437,178 @@ export default function Home() {
         {/* Crop Selector */}
         {pageStep === "ready" && fileDuration !== null && cropEnd !== null && (
           <div className="mb-6 rounded-2xl border border-zinc-200 p-5">
-            <div className="flex items-center justify-between mb-4">
-              <label className="text-xs font-medium text-zinc-500 uppercase tracking-widest">
+            {/* Inline preview player */}
+            <div className="mb-4">
+              {file?.type.startsWith("video/") ? (
+                <div className="relative cursor-pointer group" onClick={handlePreviewToggle}>
+                  <video
+                    ref={videoPreviewRef}
+                    src={previewUrl ?? undefined}
+                    className="w-full rounded-xl bg-zinc-100"
+                    playsInline
+                    onEnded={() => setIsPreviewPlaying(false)}
+                  />
+                  <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                    <div className="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center shadow-md">
+                      {isPreviewPlaying ? (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="#18181b">
+                          <rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" />
+                        </svg>
+                      ) : (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="#18181b" style={{marginLeft: "2px"}}>
+                          <polygon points="5,3 19,12 5,21" />
+                        </svg>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handlePreviewToggle}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-zinc-50 hover:bg-zinc-100 transition-colors"
+                >
+                  <div className="w-8 h-8 rounded-full bg-zinc-900 flex items-center justify-center flex-shrink-0">
+                    {isPreviewPlaying ? (
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="white">
+                        <rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" />
+                      </svg>
+                    ) : (
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="white" style={{marginLeft: "1px"}}>
+                        <polygon points="5,3 19,12 5,21" />
+                      </svg>
+                    )}
+                  </div>
+                  <div className="text-left">
+                    <p className="text-xs font-medium text-zinc-700">{isPreviewPlaying ? "재생 중..." : "구간 미리 듣기"}</p>
+                    <p className="text-xs text-zinc-400 font-mono">{formatTime(cropStart)} – {formatTime(cropEnd)}</p>
+                  </div>
+                  <audio
+                    ref={audioPreviewRef}
+                    src={previewUrl ?? undefined}
+                    onEnded={() => setIsPreviewPlaying(false)}
+                    className="hidden"
+                  />
+                </button>
+              )}
+            </div>
+
+            {/* Single-row timeline */}
+            <div className="flex items-center gap-3">
+              <label className="text-xs font-medium text-zinc-500 uppercase tracking-widest whitespace-nowrap">
                 구간 선택
               </label>
-              <span className="text-xs font-mono text-zinc-700">
-                {formatTime(cropStart)} – {formatTime(cropEnd)}
-                <span className="text-zinc-400 ml-1">({formatTime(cropEnd - cropStart)})</span>
+
+              {/* Timeline track */}
+              <div
+                ref={trackRef}
+                className="relative flex-1 h-8 flex items-center select-none cursor-pointer"
+                onPointerDown={(e) => {
+                  const t = getTimeFromPointer(e.clientX);
+                  const media = getPreviewMedia();
+                  if (media) { media.pause(); media.currentTime = t; setIsPreviewPlaying(false); }
+                  setPreviewCurrentTime(t);
+                }}
+              >
+                {/* Track background */}
+                <div className="absolute w-full h-1.5 rounded-full bg-zinc-200 overflow-hidden pointer-events-none">
+                  <div className="absolute h-full bg-zinc-300" style={{ left: `${(cropStart / fileDuration) * 100}%`, width: `${((cropEnd - cropStart) / fileDuration) * 100}%` }} />
+                  <div className="absolute h-full bg-zinc-700" style={{ left: `${(cropStart / fileDuration) * 100}%`, width: `${(Math.max(0, Math.min(previewCurrentTime, cropEnd) - cropStart) / fileDuration) * 100}%` }} />
+                </div>
+
+                {/* Crop start handle */}
+                <div
+                  className="absolute top-1/2 w-1 h-5 bg-zinc-900 rounded-full cursor-ew-resize z-10 touch-none"
+                  style={{ left: `${(cropStart / fileDuration) * 100}%`, transform: "translate(-50%, -50%)" }}
+                  onPointerDown={(e) => { e.stopPropagation(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); }}
+                  onPointerMove={(e) => {
+                    if (!(e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) return;
+                    const t = getTimeFromPointer(e.clientX);
+                    const clamped = Math.max(0, Math.min(t, cropEnd - 1));
+                    setCropStart(clamped);
+                    if (cropEnd - clamped > MAX_CROP_DURATION) setCropEnd(clamped + MAX_CROP_DURATION);
+                    const media = getPreviewMedia();
+                    if (media) { media.pause(); media.currentTime = clamped; setIsPreviewPlaying(false); }
+                    setPreviewCurrentTime(clamped);
+                  }}
+                />
+
+                {/* Crop end handle */}
+                <div
+                  className="absolute top-1/2 w-1 h-5 bg-zinc-900 rounded-full cursor-ew-resize z-10 touch-none"
+                  style={{ left: `${(cropEnd / fileDuration) * 100}%`, transform: "translate(-50%, -50%)" }}
+                  onPointerDown={(e) => { e.stopPropagation(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); }}
+                  onPointerMove={(e) => {
+                    if (!(e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) return;
+                    const t = getTimeFromPointer(e.clientX);
+                    const clamped = Math.min(fileDuration, Math.max(t, cropStart + 1));
+                    setCropEnd(clamped);
+                    if (clamped - cropStart > MAX_CROP_DURATION) setCropStart(clamped - MAX_CROP_DURATION);
+                    const media = getPreviewMedia();
+                    if (media) { media.pause(); media.currentTime = Math.max(0, clamped - 1); setIsPreviewPlaying(false); }
+                    setPreviewCurrentTime(Math.max(0, clamped - 1));
+                  }}
+                />
+
+                {/* Playhead */}
+                <div
+                  className="absolute top-1/2 w-3 h-3 bg-white border-2 border-zinc-900 rounded-full shadow-sm cursor-grab z-20 touch-none"
+                  style={{ left: `${(previewCurrentTime / fileDuration) * 100}%`, transform: "translate(-50%, -50%)" }}
+                  onPointerDown={(e) => { e.stopPropagation(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); }}
+                  onPointerMove={(e) => {
+                    if (!(e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) return;
+                    const t = getTimeFromPointer(e.clientX);
+                    setPreviewCurrentTime(t);
+                    const media = getPreviewMedia();
+                    if (media) { media.pause(); media.currentTime = t; setIsPreviewPlaying(false); }
+                  }}
+                />
+              </div>
+
+              <span className="text-xs font-mono text-zinc-500 whitespace-nowrap">
+                {formatTime(previewCurrentTime)}
               </span>
             </div>
+          </div>
+        )}
 
-            <div className="space-y-4">
-              <div>
-                <div className="flex justify-between text-xs text-zinc-400 mb-1.5">
-                  <span>시작</span>
-                  <span className="font-mono text-zinc-600">{formatTime(cropStart)}</span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={Math.floor(fileDuration)}
-                  step={1}
-                  value={cropStart}
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setCropStart(val);
-                    if (val >= cropEnd) setCropEnd(Math.min(val + 1, Math.floor(fileDuration)));
-                    else if (cropEnd - val > MAX_CROP_DURATION) setCropEnd(val + MAX_CROP_DURATION);
-                  }}
-                  className="w-full accent-zinc-900"
-                />
-              </div>
-
-              <div>
-                <div className="flex justify-between text-xs text-zinc-400 mb-1.5">
-                  <span>끝</span>
-                  <span className="font-mono text-zinc-600">{formatTime(cropEnd)}</span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={Math.floor(fileDuration)}
-                  step={1}
-                  value={cropEnd}
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setCropEnd(val);
-                    if (val <= cropStart) setCropStart(Math.max(val - 1, 0));
-                    else if (val - cropStart > MAX_CROP_DURATION) setCropStart(val - MAX_CROP_DURATION);
-                  }}
-                  className="w-full accent-zinc-900"
-                />
-              </div>
-            </div>
-
-            <div className="flex justify-between mt-3 text-xs text-zinc-400">
-              <span>0:00</span>
-              <span>{formatTime(Math.floor(fileDuration))}</span>
+        {/* Options */}
+        {(pageStep === "ready" || pageStep === "cropping" || pageStep === "processing") && file?.type.startsWith("video/") && (
+          <div className="mb-6 rounded-2xl border border-zinc-200 p-5">
+            <label className="block text-xs font-medium text-zinc-500 mb-3 uppercase tracking-widest">
+              처리 옵션
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { label: "더빙", description: "음성 교체", checked: enableDubbing, onChange: setEnableDubbing },
+                { label: "자막", description: "자막 삽입", checked: enableCaption, onChange: setEnableCaption },
+              ].map(({ label, description, checked, onChange }) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => pageStep === "ready" && onChange(!checked)}
+                  disabled={pageStep !== "ready"}
+                  className={[
+                    "flex items-center justify-between px-4 py-3 rounded-xl border transition-all duration-100",
+                    checked ? "border-zinc-900 bg-zinc-50" : "border-zinc-200 bg-white",
+                    pageStep !== "ready" ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:border-zinc-400",
+                  ].join(" ")}
+                >
+                  <div className="text-left">
+                    <p className={["text-sm font-medium", checked ? "text-zinc-900" : "text-zinc-500"].join(" ")}>{label}</p>
+                    <p className="text-xs text-zinc-400 mt-0.5">{description}</p>
+                  </div>
+                  <div className={[
+                    "w-9 h-5 rounded-full transition-colors flex-shrink-0 ml-3",
+                    checked ? "bg-zinc-900" : "bg-zinc-200",
+                  ].join(" ")}>
+                    <div className={[
+                      "w-4 h-4 rounded-full bg-white shadow-sm mt-0.5 transition-transform",
+                      checked ? "translate-x-4" : "translate-x-0.5",
+                    ].join(" ")} />
+                  </div>
+                </button>
+              ))}
             </div>
           </div>
         )}
@@ -465,10 +644,10 @@ export default function Home() {
 
             <button
               onClick={handleStart}
-              disabled={pageStep !== "ready"}
+              disabled={pageStep !== "ready" || (!enableDubbing && !enableCaption)}
               className={[
                 "w-full py-4 rounded-2xl text-sm font-semibold transition-all duration-150",
-                pageStep !== "ready"
+                pageStep !== "ready" || (!enableDubbing && !enableCaption)
                   ? "bg-zinc-200 text-zinc-400 cursor-not-allowed"
                   : "bg-zinc-900 text-white hover:bg-zinc-700 active:scale-[0.99]",
               ].join(" ")}
